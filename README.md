@@ -44,7 +44,7 @@ Siklus target-based — fase berpindah otomatis begitu target tercapai (dicek ti
 ### One-line install (VPS Ubuntu/Debian baru)
 
 ```bash
-curl -sL https://raw.githubusercontent.com/hobiknoock/kintara-bot/main/install.sh | bash
+curl -sL https://raw.githubusercontent.com/Hobiknock/kintara-bot/main/install.sh | bash
 ```
 
 Installer otomatis: install Node.js ≥ 18 + screen, clone repo, `npm install`, siapkan `.env` template. **Kamu tinggal isi 2 kredensial sendiri** (jangan pernah share):
@@ -72,7 +72,7 @@ Lalu start:
 sudo apt update && sudo apt install -y nodejs npm
 
 # 2. Clone
-git clone https://github.com/hobiknoock/kintara-bot.git
+git clone https://github.com/Hobiknock/kintara-bot.git
 cd kintara-bot
 
 # 3. Dependencies

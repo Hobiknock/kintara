@@ -5,7 +5,7 @@
 # ============================================
 set -e
 
-REPO_URL="https://github.com/hobiknoock/kintara-bot.git"
+REPO_URL="https://github.com/Hobiknock/kintara-bot.git"
 INSTALL_DIR="$HOME/kintara-bot"
 
 echo "🦞 Kintara Bot Installer"
