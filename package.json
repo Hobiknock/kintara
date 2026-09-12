@@ -1,0 +1,19 @@
+{
+  "name": "kintara-bot",
+  "version": "2.0.0",
+  "description": "Headless automation bot for Kintara (Solana isometric MMO) — AUTO orchestrator, mining, woodcutting, fishing+cooking, combat, banking, daily quest+spinner, full Telegram control. No browser needed.",
+  "main": "tools/telegram-ctl.js",
+  "scripts": {
+    "start": "node tools/telegram-ctl.js",
+    "keeper": "./keeper.sh"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "bs58": "^6.0.0",
+    "tweetnacl": "^1.0.3",
+    "ws": "^8.21.0"
+  }
+}

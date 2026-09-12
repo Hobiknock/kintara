@@ -1,0 +1,22 @@
+# ==== KREDENSIAL — JANGAN PERNAH COMMIT ====
+.env
+*.env
+!.env.example
+
+# Log & state runtime
+recon/
+logs/
+*.log
+
+# Node
+node_modules/
+package-lock.json
+
+# Sistem
+.DS_Store
+Thumbs.db
+
+# Data lokal / test
+tests/
+errors.json
+deliverable/
