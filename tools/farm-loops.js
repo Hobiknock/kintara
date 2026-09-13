@@ -821,6 +821,7 @@ const TUT_STEPS = [
   ['visit_arena', 'Arena'], ['inspect_player', 'Friend'], ['open_friends', 'Friends'],
   ['open_inventory', 'Inventory'], ['open_leaderboard', 'Rankings'], ['open_stats', 'Stats'],
   ['open_outfit', 'Look'], ['open_marketplace', 'Marketplace'],
+  ['card_daily', 'Daily Card'], ['card_housing', 'Housing Card'],
 ];
 
 async function runTutorial(ctx) {
