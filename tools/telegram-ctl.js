@@ -61,9 +61,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---- state aktivitas ----
 let current = null; // { name, stopFlag, startedAt, stats, notif }
-function makeCtx(name) {
+function makeCtx(name, opts = {}) {
   const ctx = {
-    name, _stop: false, counters: {},
+    name, _stop: false, counters: {}, ...opts,
     stop: () => ctx._stop,
     bump: (k) => { ctx.counters[k] = (ctx.counters[k] || 0) + 1; },
     get: (k) => ctx.counters[k] || 0,
@@ -98,10 +98,10 @@ function sumRows(name, counters) {
   return rows.length ? rows : [['Hasil', '—']];
 }
 
-async function startActivity(name, fn) {
+async function startActivity(name, fn, opts = {}) {
   if (auto) return `🔄 AUTO mode jalan. Kirim /stop dulu kalau mau manual.`;
   if (current) return `⛔ Sedang jalan: ${current.name}. Kirim /stop dulu.`;
-  const ctx = makeCtx(name);
+  const ctx = makeCtx(name, opts);
   current = { name, ctx, startedAt: Date.now() };
   (async () => {
     try {
@@ -109,9 +109,12 @@ async function startActivity(name, fn) {
       const res = await fn({ ...ctx, cli: c });
       const dur = Math.round((Date.now() - current.startedAt) / 60000);
       const sum = fmtSummary(name, res, ctx.counters);
+      // spinner: hasil spin (grant) langsung jadi row panel — bukan '—'
+      const spinGrant = (name === 'spinner' && res?.spun && res.grant) ? [['🎁 Hadiah', `${res.grant.type || '?'} +${res.grant.n || res.grant.amount || '?'}`]] : [];
       await tg.send(panel(`${activityLabel(name)} — SELESAI`, [
         ['Durasi', `${dur} mnt`],
-        ['Aktivitas', activityLabel(name)],
+        ['Hasil', sum],
+        ...spinGrant,
         ...sumRows(name, ctx.counters),
       ], '🏁')).catch(() => {});
     } catch (e) {
@@ -284,7 +287,7 @@ function fmtAgeMin(min) {
 }
 
 function activityLabel(name) {
-  return { rock: '⛏ Mining', wood: '🪓 Wood', combat: '⚔️ Combat (zombie)', boss: '⚔️ Combat (dragon)', fish: '🎣 Fishing', spinner: '🎡 Spinner', tutorial: '📖 Tutorial' }[name] || name;
+  return { rock: '⛏ Mining', stone: '🪨 Mining stone', coal: '⬛ Mining coal', wood: '🪓 Wood', combat: '⚔️ Combat (zombie)', boss: '⚔️ Combat (dragon)', fish: '🎣 Fishing', cook: '🍳 Cooking', spinner: '🎡 Spinner', tutorial: '📖 Tutorial' }[name] || name;
 }
 
 // ringkasan hasil aktivitas — dipakai pesan "selesai" (manual & auto)
@@ -292,10 +295,13 @@ function fmtSummary(name, res, ct) {
   const r = res || {};
   const c = ct || {};
   if (name === 'rock') return `+${r.stone || 0} 🪨 +${r.coal || 0} ⬛ +${r.metal || 0} 🔩 • ${c.felled || 0} node`;
+  if (name === 'stone') return `+${r.stone || 0} 🪨 +${r.metal || 0} 🔩 • ${c.felled || 0} node (mode stone)`;
+  if (name === 'coal') return `+${r.coal || 0} ⬛ +${r.metal || 0} 🔩 • ${c.felled || 0} node (mode coal)`;
+  if (name === 'cook') return `🍳 ${r.cooked || 0} ikan masak${r.err === 'no_fish' ? ' (gak ada ikan mentah)' : ''}`;
   if (name === 'wood') return `+${r.wood || 0} 🪵 • ${c.felled || 0} node`;
-  if (name === 'combat' || name === 'boss') return `${r.kills ?? c.kill ?? 0} ☠️${r.deaths ? ` • ${r.deaths} 💀` : ''}${r.retreats ? ` • ${r.retreats} 🏃` : ''}`;
+  if (name === 'combat' || name === 'boss') { const why = { 'no-sword': '🛑 tanpa pedang', 'sword-lost': '🛑 pedang ilang pas mati', 'death-cap': '🛑 cap 2 mati', 'no-potions': '🛑 potion habis', 'no-wild': '🛑 gagal masuk wild' }[r.err]; return `${r.kills ?? c.kill ?? 0} ☠️${r.deaths ? ` • ${r.deaths} 💀` : ''}${r.retreats ? ` • ${r.retreats} 🏃` : ''}${why ? ` — ${why}` : ''}`; }
   if (name === 'fish') return `${r.ok ?? c.fish ?? 0} 🐟 / ${r.casts ?? c.cast ?? 0} cast`;
-  if (name === 'spinner') return r.spins ? `${r.spins} 🎡` : 'selesai';
+  if (name === 'spinner') return r.spun ? `🎡 spin OK${r.grant ? ` — ${r.grant.type || '?'} +${r.grant.n || r.grant.amount || '?'}` : ''}` : `spin gagal: ${r.err || '?'}`;
   const keys = Object.keys(r).filter((k) => typeof r[k] === 'number');
   return keys.length ? keys.map((k) => `${k} ${r[k]}`).join(' • ') : 'selesai';
 }
@@ -303,6 +309,9 @@ function fmtSummary(name, res, ct) {
 function sessionLine(name, ct, mins) {
   const age = fmtAgeMin(mins);
   if (name === 'rock') return `⛏ felled ${ct.felled || 0} | 🪨 +${ct.stone || 0} | ⬛ +${ct.coal || 0} | 🔩 +${ct.metal || 0} | ⏱ ${age}`;
+  if (name === 'stone') return `🪨 stone mode | felled ${ct.felled || 0} | 🪨 +${ct.stone || 0} | ⏱ ${age}`;
+  if (name === 'coal') return `⬛ coal mode | felled ${ct.felled || 0} | ⬛ +${ct.coal || 0} | ⏱ ${age}`;
+  if (name === 'cook') return `🍳 cooked ${ct.cooked || 0} | ⏱ ${age}`;
   if (name === 'wood') return `🪓 felled ${ct.felled || 0} | 🪵 +${ct.wood || 0} | ⏱ ${age}`;
   if (name === 'combat' || name === 'boss') return `⚔️ kill ${ct.kill || 0} | 🗡️ hits ${ct.hits || 0} | ⏱ ${age}`;
   if (name === 'fish') return `🎣 ${ct.fish || 0}/${ct.cast || 0} | ⏱ ${age}`;
@@ -450,7 +459,7 @@ async function hDiag() {
 function hHelp() {
   return `🤖 <b>Kintara Bot — Commands</b>\n` +
     `/status — bot status &amp; inventory\n/skills — skill levels, XP, avg level\n/balance — gold/$KINS/resources\n/market — marketplace prices\n/server — live server queues\n/version — current game version\n/quest — daily quests (auto-claim)\n/spinner — 🎡 free spin wheel (12h)\n/diag — auth, shard, process\n\n` +
-    `/rock — mining stone/coal/metal ⛏\n/wood — woodcutting 🪓\n/fish — fishing + cooking 🎣\n/combat — hunt zombie ⚔️ (/combat boss = dragon 🐉)\n/auto — automatic orchestrator (smart switching) 🧠\n/stop — stop all\n/help — command list\n\n` +
+    `/rock — mining stone+coal ⛏ (di POND — node rapat, rate 3x world)\n/stone — mining khusus stone 🪨\n/coal — mining khusus coal ⬛\n/wood — woodcutting 🪓\n/fish — fishing 🎣\n/cook — masak ikan mentah jadi cooked 🍳\n/combat — hunt zombie ⚔️ (/combat boss = dragon 🐉)\n/auto — automatic orchestrator (smart switching) 🧠\n/stop — stop all\n/help — command list\n\n` +
     `<i>1 akun = 1 aktivitas (aman dari anti-cheat). Combat pakai bank-first + auto-survival.</i>`;
 }
 
@@ -458,6 +467,9 @@ function hHelp() {
 const commands = {
   auto: () => startAuto(),
   rock: () => startActivity('rock', (ctx) => loops.runRock(ctx)),
+  stone: () => startActivity('stone', (ctx) => loops.runRock(ctx), { mode: 'stone' }),
+  coal: () => startActivity('coal', (ctx) => loops.runRock(ctx), { mode: 'coal' }),
+  cook: () => startActivity('cook', (ctx) => loops.runCook(ctx)),
   wood: () => startActivity('wood', (ctx) => loops.runWood(ctx)),
   combat: (args) => {
     const boss = ['boss', 'dragon', 'b'].includes(String(args[0] || '').toLowerCase());
@@ -495,7 +507,10 @@ const commands = {
   // menu command native (muncul pas tekan "/" di Telegram)
   const tgMenu = [
     { command: 'auto', description: '🧠 Smart auto: cycle semua aktivitas' },
-    { command: 'rock', description: '⛏️ Mining stone/coal/metal' },
+    { command: 'rock', description: '⛏️ Mining stone+coal (POND)' },
+    { command: 'stone', description: '🪨 Mining khusus stone' },
+    { command: 'coal', description: '⬛ Mining khusus coal' },
+    { command: 'cook', description: '🍳 Masak ikan mentah jadi cooked' },
     { command: 'wood', description: '🪓 Woodcutting' },
     { command: 'combat', description: '⚔️ Hunt zombie (/combat boss 🐉 = dragon)' },
     { command: 'fish', description: '🎣 Fishing + cooking' },

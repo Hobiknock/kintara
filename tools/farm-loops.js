@@ -100,7 +100,7 @@ function persistLootAsync(cli, loot, yld = NODE_YIELD) {
 async function flushPersist() { await _persistChain; }
 
 function pickNodeFixed(p, kinds, avoid = null, avoidMs = 120000) {
-  const here = { c: Math.round(p.pos.x + 30.5), r: Math.round(p.pos.z + 30.5) };
+  const here = { c: Math.round(p.pos.x - tileOff(p.region)), r: Math.round(p.pos.z - tileOff(p.region)) };
   const now = Date.now();
   let b = null, bd = Infinity;
   for (const kind of kinds) {
@@ -136,25 +136,101 @@ async function gotoResourceZone(p, onEvent, maxSec = 90, zone = 'rock') {
   return p.region === 'world';
 }
 
+// offset tile per-region: world -30.5 | pond -19.5 | wild* -24.5
+function tileOff(region) {
+  if (/pond|desert/.test(region || '')) return -19.5;
+  if (/^wild/.test(region || '')) return -24.5;
+  return -30.5;
+}
+
+// Masuk Pond (pola runFish TERBUKTI): jalan ke portal world (30.5,0.5) → setRegion pond (-18.5,0.5).
+// Return true kalau region === 'pond'.
+async function gotoPond(p, onEvent, maxSec = 90) {
+  if (p.region === 'pond') return true;
+  onEvent && onEvent('🚶 ke Pond (portal timur)...');
+  if (p.region !== 'world') {
+    // dari region lain: pulang dulu ke world lewat portal masing-masing
+    if (p.region === 'eldergrove') { try { await p.walkTo(0.5, -24.5, { maxSec: 25 }).catch(() => {}); p.setRegion('world', 0.5, 29.5); await sleep(3000); } catch {} }
+    if (/^wild/.test(p.region || '')) { try { p.setRegion('world', NORTH_PORTAL.x, NORTH_PORTAL.z + 1); await sleep(3000); } catch {} }
+    if (p.region !== 'world') return false;
+  }
+  try { await p.walkTo(30.5, 0.5, { maxSec }).catch(() => {}); } catch {}
+  await sleep(800);
+  if (Math.abs(p.pos.x - 30.5) > 2 || Math.abs(p.pos.z - 0.5) > 2) {
+    try { p.setRegion('world', 30.5, 0.5); await sleep(2000); } catch {}
+  }
+  try { p.setRegion('pond', -18.5, 0.5); } catch {}
+  let w = 0;
+  while (p.region !== 'pond' && w < 20000) { await sleep(1000); w += 1000; }
+  if (p.region === 'pond') { await sleep(2000); }
+  return p.region === 'pond';
+}
+
 // ============ /rock — panen stone+coal (pace manusia: ~15 node/mnt) ============
 async function runRock(ctx) {
   const { cli, stop, onEvent } = ctx;
-  onEvent('⛏️ Mulai panen stone+coal...');
+  // mode: 'any' (default, stone+coal) | 'stone' (skip node coal) | 'coal' (HANYA node coal)
+  const mode = ctx.mode || 'any';
+  // zone: 'world' (default, zona rock lama) | 'pond' (ZONA BARU — node lebih rapat, respawn cepat)
+  const zone = ctx.zone || 'pond';
+  const wantCoal = mode === 'coal';
+  const skipCoal = mode === 'stone';
+  onEvent(`⛏️ Mulai panen ${mode === 'coal' ? 'COAL (khusus node coal)' : mode === 'stone' ? 'STONE (skip node coal)' : 'stone+coal'}${zone === 'pond' ? ' di POND 🎣' : ''}...`);
   const p = await connectPresence(cli, onEvent);
   watchLevelUps(p, ctx); // notif LEVEL UP ke chat
   try { p.equip('tool_pickaxe'); } catch {} // human-like: bawa pickaxe pas mining
-  if (!(await gotoResourceZone(p, onEvent))) onEvent(`⚠️ belum di zona rock (region=${p.region}) — coba node sekitar`);
+  if (zone === 'pond') {
+    // masuk pond dulu (pola runFish) — node pond rapat & respawn deras
+    if (!(await gotoPond(p, onEvent))) {
+      onEvent('⚠️ gagal masuk pond — fallback ke zona rock world');
+      if (!(await gotoResourceZone(p, onEvent))) onEvent(`⚠️ belum di zona rock (region=${p.region}) — coba node sekitar`);
+    }
+  } else if (!(await gotoResourceZone(p, onEvent))) onEvent(`⚠️ belum di zona rock (region=${p.region}) — coba node sekitar`);
+  // tunggu res_snap ngisi node (pond butuh beberapa detik)
+  let waitN = 0;
+  while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && waitN < 20000) { await sleep(1000); waitN += 1000; }
+  // Waypoint rotasi POND (sebaran node: cluster barat tile 4-26 & timur tile 21-37) — pakalau skip-storm
+  const POND_WP = [[8, -4], [14, 2], [10, 14], [2, 10], [-8, 12], [-14, 4], [-10, -4], [-2, -8], [6, 6], [-6, -6]];
+  let wpIdx = 0, skipStreak = 0, felledSinceMove = 0;
   const dead = new Map(); // key -> ts blacklist (node gagal/depleted)
-  let stone = 0, coal = 0, metal = 0, fails = 0;
+  let stone = 0, coal = 0, metal = 0, fails = 0, skips = 0;
   while (!stop()) {
-    const tgt = pickNodeFixed(p, ['rock'], dead);
+    const OFF = tileOff(p.region); // offset live — region bisa berubah pas reconnect
+    let tgt = pickNodeFixed(p, ['rock'], dead);
+    // filter sesuai mode
+    if (tgt && skipCoal && tgt.hasCoal && !tgt.hasMetal) { // node coal murni — buang, tapi jangan blacklist (bisa dipanen mode lain)
+      dead.set(tgt.key, Date.now()); skips++; tgt = null; let alt = pickNodeFixed(p, ['rock'], dead);
+      while (alt && skipCoal && alt.hasCoal && !alt.hasMetal) { dead.set(alt.key, Date.now()); skips++; alt = pickNodeFixed(p, ['rock'], dead); }
+      tgt = alt;
+    }
+    if (tgt && wantCoal && !tgt.hasCoal) { // mode coal: node bukan coal → blacklist sementara, cari node coal
+      dead.set(tgt.key, Date.now()); skips++;
+      const cands = [...p.knownNodes('rock')].filter((n) => n.hasCoal && !dead.has(n.key) && (n.seen || 0) > Date.now() - 600000);
+      const me = { c: Math.round(p.pos.x - OFF), r: Math.round(p.pos.z - OFF) };
+      if (cands.length) {
+        cands.sort((a, b) => Math.hypot((a.key.split(',')[0] | 0) - me.c, (a.key.split(',')[1] | 0) - me.r) - Math.hypot((b.key.split(',')[0] | 0) - me.c, (b.key.split(',')[1] | 0) - me.r));
+        tgt = cands[0];
+      } else tgt = null;
+    }
     if (!tgt) {
-      if (dead.size) { dead.clear(); onEvent('♻️ blacklist reset — cari node respawn'); }
+      // ROTASI AREA: gak ada node hidup sekitar sini → jalan ke waypoint pond berikutnya (jangan muter di tempat)
+      if (zone === 'pond') {
+        skipStreak++;
+        if (skipStreak >= 3 || felledSinceMove === 0) {
+          const wp = POND_WP[wpIdx % POND_WP.length]; wpIdx++;
+          onEvent(`🔄 area habis — rotasi ke titik ${wp[0]},${wp[1]}...`);
+          await p.walkTo(wp[0], wp[1], { maxSec: 20 }).catch(() => {});
+          await ssleep(rnd(500, 1000)); skipStreak = 0; felledSinceMove = 0;
+          let wn = 0; while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && wn < 8000) { await sleep(1000); wn += 1000; }
+          continue;
+        }
+      }
+      if (dead.size) { dead.clear(); onEvent(`♻️ blacklist reset — cari node respawn${skips ? ` (${skips} skip mode ${mode})` : ''}`); skips = 0; }
       await ssleep(rnd(800, 1500)); continue;
     }
     // jalan dulu ke samping node (realistis, kaya orang) — jarak pendek karena pilih terdekat
     const [C, R] = tgt.key.split(',').map(Number);
-    const dstx = C - 30.5, dstz = R + 1 - 30.5;
+    const dstx = C + OFF, dstz = (R + 1) + OFF;
     if (Math.abs(p.pos.x - dstx) > 0.6 || Math.abs(p.pos.z - dstz) > 0.6) {
       await p.walkTo(dstx, dstz, { maxSec: Math.min(12, 2 + Math.hypot(p.pos.x - dstx, p.pos.z - dstz) / 2) }).catch(() => {});
     }
@@ -167,13 +243,16 @@ async function runRock(ctx) {
       ctx.bump('felled'); ctx.bump(loot === 'stone' ? 'stone' : loot === 'coal' ? 'coal' : 'metal');
       onEvent(`✅ rock felled loot=${loot} x${y} (stone+${stone} coal+${coal} metal+${metal})`);
       dead.set(tgt.key, Date.now()); // node habis — tunggu respawn
+      skipStreak = 0; felledSinceMove++; // panen sukses → reset streak, catat progres sejak rotasi
       await ssleep(rnd(300, 900)); // jeda antar node (SPEED)
     } else {
-      fails++; dead.set(tgt.key, Date.now()); // jangan pilih node ini lagi 2 mnt
+      fails++; dead.set(tgt.key, Date.now() + (p.region === 'pond' ? 150000 : 0)); // pond: blacklist 2.5 mnt (respawn lambat)
       if (fails % 10 === 1) onEvent(`⚠️ ${fails} node skip (gagal/depleted)`);
     }
     if (!p.ready) { onEvent('🔌 reconnect...'); try { p.close(); } catch {}
-      const pn = await connectPresence(cli, onEvent); Object.assign(p, pn); }
+      const pn = await connectPresence(cli, onEvent); Object.assign(p, pn);
+      if (zone === 'pond' && p.region !== 'pond') { await gotoPond(p, onEvent); } // masuk pond lagi pasca-reconnect
+      let wn = 0; while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && wn < 15000) { await sleep(1000); wn += 1000; } }
   }
   try { p.close(); } catch {}
   await flushPersist();
@@ -237,6 +316,26 @@ const ROAST = { x: -14.5, z: -12.5 }; // roast fire utk cook fish
 async function refreshPotions(cli) {
   const me = await cli.me(); const bp = me.backpack || {};
   return { health: Number(bp.potion_health) || 0, shield: Number(bp.potion_shield) || 0 };
+}
+
+// ============ GEAR: alat starter gratis ulang via grant-tool (server ngasih terus) ============
+// MATI = pedang+beliung+gancu ilang. Sebelum masuk wild lagi: cek & grant yang kurang.
+const GEAR_SET = ['wild_sword', 'tool_axe', 'tool_pickaxe', 'tool_fishing_rod'];
+async function ensureGear(cli, onEvent) {
+  const me = await cli.me(); const bp = me.backpack || {};
+  const have = new Set([...(bp.hotbar || []), ...(bp.invSlots || [])].filter(Boolean).map((s) => s.t));
+  const got = [];
+  for (const g of GEAR_SET) {
+    if (have.has(g)) continue;
+    try {
+      const r = await cli.grantTool(g);
+      if (r && r.ok !== false) { got.push(g); onEvent(`🧰 ambil alat: ${g} ✅`); }
+      else onEvent(`🧰 grant ${g}: ${r && r.error || 'gagal'}`);
+    } catch (e) { onEvent(`🧰 grant ${g} err: ${String(e.message).slice(0, 40)}`); }
+  }
+  const me2 = await cli.me(); const bp2 = me2.backpack || {};
+  const have2 = new Set([...(bp2.hotbar || []), ...(bp2.invSlots || [])].filter(Boolean).map((s) => s.t));
+  return { ok: have2.has('wild_sword'), got, have: [...have2].filter((t) => GEAR_SET.includes(t)) };
 }
 
 async function ensureCombatSupplies(cli, onEvent) {
@@ -358,6 +457,17 @@ async function runCombat(ctx, opts = {}) {
     const r = await bank.depositAll(cli);
     if (r.moved && r.moved.length) onEvent(`🏦 banked sisa: ${r.moved.join(',')}`);
   } catch (e) { onEvent('bank skip: ' + String(e.message).slice(0, 40)); }
+  // GUARD: mati zombie = ILANG SEMUA termasuk pedang & peralatan.
+  // Sesi baru mulai: alat starter bisa di-gratis ulang (grant-tool) — ambil dulu.
+  {
+    const g = await ensureGear(cli, onEvent);
+    if (!g.ok) {
+      onEvent('🛑 alat gak bisa di-gratis ulang — combat DIBATALKAN');
+      try { await bank.depositAll(cli); } catch {}
+      try { p.close(); } catch {}
+      return { kills: 0, err: 'no-sword' };
+    }
+  }
   // enter wild
   onEvent('⚔️ walk ke north portal...');
   p.equip('wild_sword');
@@ -383,23 +493,25 @@ async function runCombat(ctx, opts = {}) {
     noMob = 0;
     const sv = await survival(cli, p, pot, onEvent);
     if (sv === 'dead') {
-      deaths++; onEvent('💀 mati — respawn, cek alat & potion, masuk lagi');
+      deaths++;
       p.wildMobs = []; // buang data mob basi — jangan mukul hantu
       p.setRegion('world', NORTH_PORTAL.x, NORTH_PORTAL.z + 1);
       await ssleep(5000);
-      // alur pasca-mati (req user): ambil/pastikan pedang dulu, isi ulang potion, baru masuk
+      // MATI = ILANG SEMUA (pedang, potion, resource bawaan). Jangan nekat:
+      // cek pedang + death cap 2/sesi. Lebih dari itu = material abis percuma.
+      if (deaths >= 2) { onEvent('🛑 mati 2x dalam sesi — STOP (cap anti bunuh diri). Repari pedang dulu (/combat lagi besok).'); return { kills: ctx.get('kill') || 0, deaths, retreats, err: 'death-cap' }; }
       try {
-        const me = await cli.me(); const bp = me.backpack || {};
-        const hot = (bp.hotbar || []).filter(Boolean).map((s) => s.t);
-        const invTypes = (bp.invSlots || []).filter(Boolean).map((s) => s.t);
-        const hasSword = hot.includes('wild_sword') || invTypes.includes('wild_sword');
-        if (!hasSword) onEvent('⚠️ wild_sword gak ada! (mati = alat hilang?) — cek smith');
-        // equip ulang sword (equip state ilang pas mati)
-        p.equip('wild_sword');
+        // MATI = ILANG SEMUA (pedang, potion, resource bawaan).
+        // Strategi user: auto ambil alat-alat dulu (grant-tool gratis), baru masuk lagi.
+        const g = await ensureGear(cli, onEvent);
+        if (!g.ok) { onEvent('🛑 alat gak bisa di-gratis ulang — STOP.'); return { kills: ctx.get('kill') || 0, deaths, retreats, err: 'sword-lost' }; }
         // refill potion dari bahan bank: withdraw wood/stone → beli
         const r2 = await ensureCombatSupplies(cli, (m) => {});
         pot.health = r2.health; pot.shield = r2.shield;
         if (r2.fatal) { onEvent('🛑 potion gak bisa diisi (bahan habis) — stop combat'); return { kills: ctx.get('kill') || 0, deaths, retreats, err: 'no-potions' }; }
+        p.equip('wild_sword');
+        // semua resource di-bank DULU — yang masuk wild cuma alat + potion
+        try { const rb = await bank.depositAll(cli); if (rb.moved?.length) onEvent(`🏦 bank lagi: ${rb.moved.join(',')}`); } catch {}
         // masuk wild lagi
         await p.walkTo(NORTH_PORTAL.x, NORTH_PORTAL.z, { until: () => /^wild/.test(p.region), maxSec: 30 }).catch(() => {});
         if (!/^wild/.test(p.region)) {
@@ -547,9 +659,27 @@ async function doFishQuest(ctx, quest) {
   const { cli, stop, onEvent } = ctx;
   const PORTAL = { x: 61 - 30.5, z: 31 - 30.5 };
   const FISH_SPOT = { x: -11.5, z: 0 };
+  // PROTOCOL BETUL (sama kayak runFish): cast ke tile spot aktif → tunggu fish_bite
+  // → strike → reel → grantFishXp{mountCatch, shardId}. Cast palsu = server gak ngecount.
+  const FISH_STRIKE_MS = 2350, FISH_REEL_MS = 1480;
+  // ROD WAJIB (sama kayak runFish): server cuma push fish_spots kalau rod equipped.
+  try {
+    const me = await cli.me(); const bp = me.backpack || {};
+    const have = new Set([...(bp.hotbar || []), ...(bp.invSlots || [])].filter(Boolean).map((s) => s.t));
+    if (!have.has('tool_fishing_rod')) {
+      onEvent('🧰 rod gak ada (mati?) — ambil gratis...');
+      const r = await cli.grantTool('tool_fishing_rod');
+      if (r && r.ok !== false) onEvent('🧰 rod ✅ diambil');
+      else onEvent('❌ grant rod gagal: ' + ((r && r.error) || '?'));
+    }
+  } catch (e) { onEvent('⚠️ cek rod err: ' + String(e.message).slice(0, 50)); }
   let p = await connectPresence(cli, onEvent);
   watchLevelUps(p, ctx); // notif LEVEL UP ke chat
+  // pastikan bait (quest fish makan bait_feather per cast)
+  const bait0 = await ensureBait(cli, p, onEvent, 40, stop).catch(() => 0);
+  onEvent(`🪶 bait siap: ${bait0}`);
   try {
+    try { p.equip('tool_fishing_rod'); } catch {} // WAJIB: equip rod sebelum nunggu spot
     if (p.region !== 'pond') {
       onEvent('🎣 walk ke Pond...');
       await p.walkTo(PORTAL.x, PORTAL.z, { until: () => p.region === 'pond', maxSec: 30 });
@@ -558,21 +688,68 @@ async function doFishQuest(ctx, quest) {
       if (p.region === 'pond') { p.pos.x = -18.5; p.pos.z = 0; await p.walkTo(FISH_SPOT.x, FISH_SPOT.z, { maxSec: 12 }); }
     }
     let casts = 0, ok = 0;
+    let noSpotMin = 0; // guard 3 menit tanpa spot → cek rod & stop kalau mati total
     while (!stop()) {
       const q = await cli.dailyQuestProgress().catch(() => null);
       const qq = (q?.dailyQuestConfig?.quests || []).find((x) => x.id === quest.id);
       const pr = (q?.dailyQuest?.prog || {})[quest.id] || 0;
       if (qq && pr >= qq.target) { onEvent(`✅ quest fish selesai (${pr}/${qq.target})`); (ctx.onImportant || (() => {}))(questPanel('QUEST SELESAI', [['🎣 fish', `${pr}/${qq.target} ✅`]], '✅')); break; }
       if (p.region !== 'pond') { onEvent('🔌 keluar pond — reconnect'); try { p.close(); } catch {} p = await connectPresence(cli, onEvent); p.setRegion('pond', -11.5, 0); await sleep(3000); continue; }
-      const me = p.pondTile();
-      const fc = me.col + 3, fr = me.row;
-      p.setFishing(fc, fr, 0); await sleep(900);
-      p.setFishing(fc, fr, 1); await sleep(900);
-      p.setFishing(fc, fr, 2); await sleep(1600);
+      // cari spot aktif terdekat (server-driven, bukan tile statis)
+      let spot = p.nearestFishSpot ? p.nearestFishSpot(p.pondTile().col, p.pondTile().row, 6) : null;
+      if (!spot) {
+        noSpotMin++;
+        // tiap 1 menit tanpa spot: cek rod (mati/hilang?) & re-equip
+        if (noSpotMin % 12 === 1) { // iterasi ke-1,13,25... (~tiap 60 dtk)
+          onEvent('⏳ nunggu fish_spots...' + (noSpotMin > 12 ? ` (${Math.floor(noSpotMin/12)} menit)` : ''));
+          try { p.equip('tool_fishing_rod'); } catch {} // re-equip: kadang server "lupa" push
+        }
+        if (noSpotMin >= 36) { // 3 menit gak ada spot → cek rod beneran + stop kalau gak ada
+          onEvent('🛑 3 menit gak ada spot — cek rod...');
+          try {
+            const me = await cli.me(); const bp = me.backpack || {};
+            const have = new Set([...(bp.hotbar || []), ...(bp.invSlots || [])].filter(Boolean).map((s) => s.t));
+            if (have.has('tool_fishing_rod')) { onEvent('🧰 rod masih ada — spot emang kosong, lanjut tunggu'); noSpotMin = 12; }
+            else {
+              const r = await cli.grantTool('tool_fishing_rod');
+              if (r && r.ok !== false) { onEvent('🧰 rod ✅ diambil ulang'); try { p.equip('tool_fishing_rod'); } catch {} noSpotMin = 0; }
+              else { onEvent('❌ rod gak bisa diambil — stop sesi. Coba /fish lagi nanti.'); break; }
+            }
+          } catch (e) { onEvent('⚠️ cek rod err — lanjut'); }
+        }
+        await ssleep(5000); continue;
+      }
+      noSpotMin = 0;
+      const pt = p.pondTile();
+      const n = p.fishSpotSize || 2;
+      const dc = Math.max(spot.c - pt.col, pt.col - (spot.c + n - 1), 0);
+      const dr = Math.max(spot.r - pt.row, pt.row - (spot.r + n - 1), 0);
+      if (Math.max(dc, dr) > 3) {
+        const ccol = Math.max(2, spot.c - 2), crow = spot.r + ((n - 1) >> 1);
+        await p.walkTo(ccol - 19.5, crow - 20, { maxSec: 12 }).catch(() => {});
+      }
+      const castCol = spot.c, castRow = spot.r + ((n - 1) >> 1);
+      p.fishBiteAt = null;
+      p.setFishing(castCol, castRow, 0); // wait phase — mulai cast bener
+      casts++; ctx.bump('cast');
+      // tunggu fish_bite dari server (max 20 dtk)
+      let biteAt = null;
+      for (let i = 0; i < 20 && !stop(); i++) {
+        await sleep(1000);
+        if (p.fishBiteAt) { biteAt = p.fishBiteAt; break; }
+        if (p.tileInFishSpot && p.tileInFishSpot(p.fishCastCol, p.fishCastRow) === false) break;
+      }
+      if (!biteAt) { p.setAct(null); await ssleep(rnd(400, 1200)); continue; }
+      const waitMs = Math.max(0, biteAt - Date.now());
+      if (waitMs > 0) await sleep(waitMs);
+      p.setFishing(castCol, castRow, 1); await sleep(FISH_STRIKE_MS); // strike
+      p.setFishing(castCol, castRow, 2); await sleep(FISH_REEL_MS);   // reel
       try {
-        const g = await cli.grantFishXp({}); p.clearAct(); casts++; ctx.bump('cast');
-        if (g?.ok !== false) { ok++; ctx.bump('fish'); if (ok % 5 === 0) onEvent(`🐟 cast ok ${ok}/${casts} fish=${g?.backpack?.fish ?? '?'}`); }
-      } catch (e) { p.clearAct(); if (/not_in_pond/.test(e.message||'')) { p.region = 'world'; } await ssleep(2000); }
+        const shardNum = Number(String(p.shard || '').replace(/[^0-9]/g, '')) || 1;
+        const g = await cli.grantFishXp({ mountCatch: true, shardId: shardNum });
+        p.setAct(null);
+        if (g?.ok !== false) { ok++; ctx.bump('fish'); onEvent(`🐟 quest catch ${ok}/${casts} (prog ${(await cli.dailyQuestProgress().catch(() => null))?.dailyQuest?.prog?.[quest.id] || '?'}/${quest.target})`); }
+      } catch (e) { p.setAct(null); await ssleep(2000); }
       // masak tiap 8 ikan — quest cooked_fish_meat butuh COOK, bukan cuma catch
       const bp = (await cli.me().catch(() => ({}))).backpack || {};
       if ((bp.fish || 0) >= 8) {
@@ -795,17 +972,60 @@ async function ensureBait(cli, p, onEvent, target = 40, stop = null) {
 const FISH_STRIKE_MS = 2350;
 const FISH_REEL_MS = 1480;
 
+// ============ /cook — masak semua ikan mentah (terpisah dari fishing) ============
+async function runCook(ctx) {
+  const { cli, stop, onEvent } = ctx;
+  const me0 = await cli.me().catch(() => ({}));
+  const raw = (me0.backpack || {}).fish || 0;
+  onEvent(`🍳 Mulai masak — ${raw} ikan mentah`);
+  if (raw < 1) { onEvent('⚠️ gak ada ikan mentah — mancing dulu (/fish)'); return { cooked: 0, err: 'no_fish' }; }
+  const p = await connectPresence(cli, onEvent);
+  watchLevelUps(p, ctx);
+  // walk ke ROAST fire (village) — lewat portal pond kalau perlu
+  const PORTAL = { x: 61 - 30.5, z: 31 - 30.5 };
+  if (/wild|pond/i.test(p.region || '')) { await p.walkTo(PORTAL.x, PORTAL.z, { maxSec: 20 }).catch(() => {}); await ssleep(2000); }
+  await p.walkTo(ROAST.x, ROAST.z, { maxSec: 14 }).catch(() => {});
+  await ssleep(1500);
+  let cooked = 0, fails = 0;
+  while (!stop() && cooked < raw) {
+    try {
+      const r = await cli.grantCookXp({ mode: 'fish' });
+      if (r?.ok !== false) { cooked++; ctx.bump('cooked'); persistLootAsync(cli, 'cooked_fish_meat', 1); persistLootAsync(cli, 'fish', -1); }
+      else { fails++; }
+    } catch { fails++; }
+    if (fails > 4) { onEvent(`⚠️ masak gagal ${fails}x — stop (mungkin gak di dekat ROAST)`); break; }
+    if (cooked % 4 === 0 || cooked === raw) onEvent(`🍳 masak ${cooked}/${raw} (sisa ${raw - cooked})`);
+    await ssleep(4500); // 4.5 dtk/ikan — timer server
+  }
+  try { p.close(); } catch {}
+  await flushPersist();
+  return { cooked };
+}
+
 async function runFish(ctx) {
   const { cli, stop, onEvent } = ctx;
   const PORTAL = { x: 61 - 30.5, z: 31 - 30.5 };
   const FISH_SPOT = { x: -11.5, z: 0 };
   onEvent('🎣 Mulai mancing (protokol baru)...');
+  // ROD WAJIB: server cuma push fish_spots kalau rod EQUIPPED. Mati = rod ilang.
+  // Cek + grant dulu SEBELUM connect (biar gak nunggu spot 1.5 jam kayak kemarin).
+  try {
+    const me = await cli.me(); const bp = me.backpack || {};
+    const have = new Set([...(bp.hotbar || []), ...(bp.invSlots || [])].filter(Boolean).map((s) => s.t));
+    if (!have.has('tool_fishing_rod')) {
+      onEvent('🧰 rod gak ada (mati?) — ambil gratis...');
+      const r = await cli.grantTool('tool_fishing_rod');
+      if (r && r.ok !== false) onEvent('🧰 rod ✅ diambil');
+      else onEvent('❌ grant rod gagal: ' + ((r && r.error) || '?'));
+    }
+  } catch (e) { onEvent('⚠️ cek rod err: ' + String(e.message).slice(0, 50)); }
   let p = await connectPresence(cli, onEvent);
   watchLevelUps(p, ctx); // notif LEVEL UP ke chat
   // BAIT WAJIB: tiap catch makan 1 bait_feather. Pastikan stok dulu.
   const bait0 = await ensureBait(cli, p, onEvent, 40, stop).catch((e) => { onEvent('⚠️ bait: ' + String(e.message).slice(0, 50)); return 0; });
   onEvent(`🪶 bait siap: ${bait0}`);
   let casts = 0, ok = 0, cooked = 0;
+  let rodlessWarn = 0; // guard: nunggu spot miring tanpa rod = stop, jangan bakar waktu
   try {
     while (!stop()) {
       if (p.region !== 'pond') {
@@ -832,6 +1052,29 @@ async function runFish(ctx) {
           spot = p.nearestFishSpot(p.pondTile().col, p.pondTile().row, 5);
           if (!spot) { if (waited === 0) onEvent('⏳ nunggu fish_spots...'); await sleep(2000); waited += 2000; }
         }
+        // GUARD RODLESS: 60 dtk tanpa spot & rod gak equipped → cek & grant rod.
+        // (server push fish_spots HANYA kalau rod equipped — tanpa rod = nunggu selamanya)
+        if (!spot) {
+          rodlessWarn++;
+          if (rodlessWarn === 1) {
+            onEvent('⚠️ 60 dtk gak ada spot — cek rod...');
+            try {
+              const me = await cli.me(); const bp = me.backpack || {};
+              const have = new Set([...(bp.hotbar || []), ...(bp.invSlots || [])].filter(Boolean).map((s) => s.t));
+              if (have.has('tool_fishing_rod')) {
+                try { p.equip('tool_fishing_rod'); } catch {}
+                onEvent('🧰 rod ada tapi gak equipped — di-equip ulang');
+              } else {
+                const r = await cli.grantTool('tool_fishing_rod');
+                if (r && r.ok !== false) { onEvent('🧰 rod ✅ diambil ulang — equip'); try { p.equip('tool_fishing_rod'); } catch {} }
+                else onEvent('❌ grant rod gagal: ' + ((r && r.error) || '?'));
+              }
+            } catch (e) { onEvent('⚠️ cek rod err: ' + String(e.message).slice(0, 50)); }
+          } else if (rodlessWarn >= 3) {
+            onEvent(`🛑 ${rodlessWarn * 60} dtk gak ada spot (rod bermasalah?) — stop sesi fish. Restart /fish buat coba lagi.`);
+            break;
+          }
+        } else rodlessWarn = 0;
         // semua spot di luar range 5? ambil terdekat apa pun & jalan mendekat
         if (!spot && Array.isArray(p.fishSpots) && p.fishSpots.length) {
           const pt = p.pondTile();
@@ -923,4 +1166,4 @@ async function runFish(ctx) {
 }
 
 // ============ EXPORT ============
-module.exports = { runRock, runWood, runCombat, runSpinner, runTutorial, runFish, connectPresence, persistLoot, pickNodeFixed };
+module.exports = { runRock, runWood, runCombat, runSpinner, runTutorial, runFish, runCook, connectPresence, persistLoot, pickNodeFixed };
