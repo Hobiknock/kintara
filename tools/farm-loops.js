@@ -18,15 +18,16 @@ const ssleep = (ms) => sleep(Math.max(60, Math.round(ms / SPEED)));
 const rnd = (a, b) => a + Math.random() * (b - a);
 
 // ============ INFRA (kintara.com baru — auto shard) ============
-async function connectPresence(cli, onEvent, attempt = 0) {
+async function connectPresence(cli, onEvent, attempt = 0, forceShard = null) {
   try {
     const srv = await cli.resolveServer();
-    // shard queue = controllerId (mis. "s3"); fallback: localShardId angka, else 3
     // shard QUEUE url butuh format "sN" (string). srv.shardId udah "s2"; controllerId "s3" juga ok.
     // KINTARA_FORCE_SHARD=s4: bypass auto-pick (zona node per-shard beda — s4 ramai, node world banyak).
+    // forceShard param: override per-panggilan (dipakai scanShardsForRocks — gak sentuh env global).
     const ctrl = String(srv.server?.controllerId || srv.controllerId || '');
     let shardStr;
-    if (/^s\d+$/.test(process.env.KINTARA_FORCE_SHARD || '')) shardStr = process.env.KINTARA_FORCE_SHARD;
+    if (forceShard && /^s\d+$/.test(forceShard)) shardStr = forceShard;
+    else if (/^s\d+$/.test(process.env.KINTARA_FORCE_SHARD || '')) shardStr = process.env.KINTARA_FORCE_SHARD;
     else if (/^s\d+$/.test(String(srv.shardId || ''))) shardStr = String(srv.shardId);
     else if (/^s\d+$/.test(ctrl)) shardStr = ctrl;
     else {
@@ -55,7 +56,7 @@ async function connectPresence(cli, onEvent, attempt = 0) {
     if (attempt < 2) {
       onEvent && onEvent(`⚠️ connect gagal (${String(e.message).slice(0, 40)}) — retry ${attempt + 1}...`);
       await sleep(5000 * (attempt + 1));
-      return connectPresence(cli, onEvent, attempt + 1);
+      return connectPresence(cli, onEvent, attempt + 1, forceShard);
     }
     throw e;
   }
@@ -141,6 +142,40 @@ function tileOff(region) {
   if (/pond|desert/.test(region || '')) return -19.5;
   if (/^wild/.test(region || '')) return -24.5;
   return -30.5;
+}
+
+// ============ SCAN SHARD: cari shard yang node rock-nya HIDUP ============
+// Node rock beda per-shard. Kalau zona pond & world dua-duanya steril di shard
+// aktif, cek shard lain (s1..s6): connect singkat -> masuk world rock zone ->
+// tunggu res_snap -> hitung node rock hidup. Balik daftar {shard, live} + best.
+async function scanShardsForRocks(cli, onEvent, shardList = ['s1', 's2', 's3', 's4', 's5', 's6']) {
+  const results = [];
+  for (const s of shardList) {
+    let p = null;
+    try {
+      p = await connectPresence(cli, onEvent, 0, s);
+      if (String(p.shard || '') !== s) { try { p.close(); } catch {} continue; } // connect nyasar — skip
+      p.setRegion('world', 30.5, 0.5); await sleep(1200);
+      await p.walkTo(9 - 30.5, 49.5 - 30.5, { maxSec: 30 }).catch(() => {}); // pusat zona rock world
+      p.nodes = new Map(); // reset biar murni snap shard ini
+      let wn = 0; while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && wn < 10000) { await sleep(500); wn += 500; }
+      await sleep(1500);
+      const live = p.knownNodes('rock').filter((n) => {
+        const h = n.h | 0, hm = n.hm | 0;
+        if (hm > 0 && h >= hm) return false;
+        if (n.until > 0 && n.until < Date.now() + 15000) return false;
+        return (n.seen || 0) > Date.now() - 300000;
+      }).length;
+      results.push({ shard: s, live });
+      onEvent(`📡 shard ${s}: ${live} node rock hidup`);
+      try { p.close(); } catch {}
+    } catch (e) {
+      onEvent(`📡 shard ${s}: skip (${String(e.message).slice(0, 30)})`);
+      try { p && p.close(); } catch {}
+    }
+  }
+  results.sort((a, b) => b.live - a.live);
+  return results;
 }
 
 // ── keluar pond ke WORLD dengan pola terbukti: setRegion langsung (bukan walkTo) ──
@@ -244,9 +279,35 @@ async function runRock(ctx) {
             dead.clear(); // blacklist node zona lama gak boleh ikut ke zona baru
             const target = zone === 'pond' ? 'world' : 'pond';
             onEvent(`🧭 zona ${zone} steril (${sterilityCount}x) — pindah ke ${target === 'pond' ? 'POND' : 'zona rock WORLD'}...`);
-            if (target === 'pond') { if (!(await gotoPond(p, onEvent))) { zone = 'world'; await gotoResourceZone(p, onEvent); } }
-            else if (!(await gotoResourceZone(p, onEvent))) { zone = 'pond'; await gotoPond(p, onEvent); }
+            let moved = false;
+            if (target === 'pond') moved = await gotoPond(p, onEvent);
+            else moved = await gotoResourceZone(p, onEvent);
+            if (moved) zone = target; // FIX: sinkronkan var zone dgn region aktual (bug: muter WP pond di world)
+            else { // gagal masuk zona target → tetap di zona lama, coba lagi nanti
+              onEvent(`⚠️ gagal pindah ke ${target} — tetap di ${zone}`);
+            }
             let wn2 = 0; while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && wn2 < 15000) { await sleep(1000); wn2 += 1000; }
+            // DUA ZONA STERIL BERUNTUN (pond habis, world habis) → SCAN SEMUA SHARD, reconnect ke yang paling deras
+            if (sterilityCount % 2 === 0 && fails >= 40 && felledSinceMove === 0) {
+              onEvent('🛰️ dua zona steril — scan shard buat node rock hidup...');
+              try { p.close(); } catch {} // tutup sesi lama dulu — jangan 2 sesi 1 akun pas scan
+              const scan = await scanShardsForRocks(cli, onEvent);
+              const best = scan.find((x) => x.live >= 3);
+              onEvent(`🛰️ hasil scan: ${scan.map((x) => `${x.shard}=${x.live}`).join(', ')}`);
+              if (best) {
+                onEvent(`🛰️ pindah shard ${best.shard} (${best.live} node hidup) — reconnect...`);
+                try { p.close(); } catch {}
+                const pn = await connectPresence(cli, onEvent, 0, best.shard);
+                Object.assign(p, pn);
+                dead.clear(); emptyRotas = 0; skipStreak = 0; felledSinceMove = 0;
+                if (p.region !== 'pond') { await gotoPond(p, onEvent); } // pond dulu (respawn cepat), fallback world
+                let wn3 = 0; while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && wn3 < 15000) { await sleep(1000); wn3 += 1000; }
+                if (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock'))) { // pond kosong di shard baru → world
+                  if (await gotoResourceZone(p, onEvent)) zone = 'world';
+                  let wn4 = 0; while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && wn4 < 10000) { await sleep(1000); wn4 += 1000; }
+                }
+              } else onEvent('🛰️ semua shard steril — breather 90 dtk nunggu respawn...'), await sleep(90000);
+            }
           }
           continue;
         }
