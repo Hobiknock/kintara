@@ -973,7 +973,40 @@ async function ensureBait(cli, p, onEvent, target = 40, stop = null) {
 const FISH_STRIKE_MS = 2350;
 const FISH_REEL_MS = 1480;
 
-// ============ /cook — masak semua ikan mentah (terpisah dari fishing) ============
+// ============ cook-at-roast helper (dipakai runFish & runCook) ============
+// Masak HARUS di dekat ROAST fire region WORLD (-14.5,-12.5), bukan pond.
+// Dari pond: keluar via portal timur -> world -> ROAST -> masak loop -> balik nanti.
+async function cookBatchAtRoast(ctx, p, count) {
+  const { cli, stop, onEvent } = ctx;
+  const PORTAL = { x: 61 - 30.5, z: 31 - 30.5 };
+  let cooked = 0, fails = 0;
+  // 1) pastikan di world & dekat ROAST
+  if (/pond|wild/i.test(p.region || '')) {
+    onEvent('🚶 keluar pond -> ROAST (world)...');
+    await p.walkTo(PORTAL.x, PORTAL.z, { maxSec: 20 }).catch(() => {});
+    await ssleep(2000);
+    if (p.region === 'pond') p.setRegion('world', 0.5, 29.5); // fallback state fix
+    await p.walkTo(ROAST.x, ROAST.z, { maxSec: 14 }).catch(() => {});
+    await ssleep(1500);
+  } else {
+    await p.walkTo(ROAST.x, ROAST.z, { maxSec: 14 }).catch(() => {});
+    await ssleep(1500);
+  }
+  // 2) masak loop (4.5 dtk/ikan — timer server, JANGAN diubah)
+  while (!stop() && cooked < count) {
+    try {
+      const r = await cli.grantCookXp({ mode: 'fish' });
+      if (r?.ok !== false) { cooked++; ctx.bump('cooked'); persistLootAsync(cli, 'cooked_fish_meat', 1); persistLootAsync(cli, 'fish', -1); }
+      else fails++;
+    } catch { fails++; }
+    if (fails > 4) { onEvent(`⚠️ masak gagal ${fails}x — stop batch (jauh dari ROAST?)`); break; }
+    if (cooked % 4 === 0 || cooked === count) onEvent(`🍳 masak ${cooked}/${count}`);
+    await ssleep(4500); // 4.5 dtk/ikan — timer server
+  }
+  return cooked;
+}
+
+// ============ /cook — masak semua ikan mentah (dipakai /fish & /cook) ============
 async function runCook(ctx) {
   const { cli, stop, onEvent } = ctx;
   const me0 = await cli.me().catch(() => ({}));
@@ -982,22 +1015,8 @@ async function runCook(ctx) {
   if (raw < 1) { onEvent('⚠️ gak ada ikan mentah — mancing dulu (/fish)'); return { cooked: 0, err: 'no_fish' }; }
   const p = await connectPresence(cli, onEvent);
   watchLevelUps(p, ctx);
-  // walk ke ROAST fire (village) — lewat portal pond kalau perlu
-  const PORTAL = { x: 61 - 30.5, z: 31 - 30.5 };
-  if (/wild|pond/i.test(p.region || '')) { await p.walkTo(PORTAL.x, PORTAL.z, { maxSec: 20 }).catch(() => {}); await ssleep(2000); }
-  await p.walkTo(ROAST.x, ROAST.z, { maxSec: 14 }).catch(() => {});
-  await ssleep(1500);
-  let cooked = 0, fails = 0;
-  while (!stop() && cooked < raw) {
-    try {
-      const r = await cli.grantCookXp({ mode: 'fish' });
-      if (r?.ok !== false) { cooked++; ctx.bump('cooked'); persistLootAsync(cli, 'cooked_fish_meat', 1); persistLootAsync(cli, 'fish', -1); }
-      else { fails++; }
-    } catch { fails++; }
-    if (fails > 4) { onEvent(`⚠️ masak gagal ${fails}x — stop (mungkin gak di dekat ROAST)`); break; }
-    if (cooked % 4 === 0 || cooked === raw) onEvent(`🍳 masak ${cooked}/${raw} (sisa ${raw - cooked})`);
-    await ssleep(4500); // 4.5 dtk/ikan — timer server
-  }
+  // walk & masak via helper yang sama (ROAST world — portal pond-aware, anti koordinat nyasar)
+  const cooked = await cookBatchAtRoast(ctx, p, raw);
   try { p.close(); } catch {}
   await flushPersist();
   return { cooked };
@@ -1147,17 +1166,25 @@ async function runFish(ctx) {
         else onEvent('cast err: ' + m.slice(0, 40));
         await sleep(2000);
       }
-      // masak tiap 8 ikan (biar quest cook 20 selesai dalam 1-2 slot fish)
+      // masak tiap 8 ikan — ROAST ada di WORLD: keluar pond dulu (fix koordinat nyasar)
       const bp = (await cli.me().catch(() => ({}))).backpack || {};
       if ((bp.fish || 0) >= 8) {
         onEvent('🍳 masak batch...');
-        await p.walkTo(ROAST.x, ROAST.z, { maxSec: 14 }).catch(() => {});
-        await sleep(1500);
-        for (let i = 0; i < 8; i++) {
-          try { const r = await cli.grantCookXp({ mode: 'fish' }); if (r?.ok !== false) { cooked++; ctx.bump('cooked'); } } catch { break; }
-          await sleep(4500);
+        const c = await cookBatchAtRoast(ctx, p, bp.fish);
+        cooked += c;
+        onEvent(`🍳 batch done: +${c} cooked (total ${cooked})`);
+        // balik ke pond & re-equip rod (server reset equip pas pindah region)
+        await p.walkTo(PORTAL.x, PORTAL.z, { maxSec: 20 }).catch(() => {});
+        if (Math.abs(p.pos.x - PORTAL.x) < 1.5 && Math.abs(p.pos.z - PORTAL.z) < 1.5) {
+          p.setRegion('pond', -18.5, 0.5);
+          let w = 0; while (p.region !== 'pond' && w < 10000) { await sleep(1000); w += 1000; }
         }
-        await p.walkTo(FISH_SPOT.x, FISH_SPOT.z, { maxSec: 14 }).catch(() => {});
+        if (p.region === 'pond') {
+          p.pos.x = -18.5; p.pos.z = 0;
+          try { p.equip('tool_fishing_rod'); } catch {}
+          await sleep(2000);
+          await p.walkTo(FISH_SPOT.x, FISH_SPOT.z, { maxSec: 12 }).catch(() => {});
+        }
       }
       if (!p.ready) { onEvent('🔌 reconnect...'); try { p.close(); } catch {} p = await connectPresence(cli, onEvent); }
       await ssleep(rnd(1000, 2200)); // jeda antar cast (SPEED)

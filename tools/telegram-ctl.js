@@ -498,7 +498,7 @@ async function hDiag() {
 function hHelp() {
   return `🤖 <b>Kintara Bot — Commands</b>\n` +
     `/status — bot status &amp; inventory\n/skills — skill levels, XP, avg level\n/balance — gold/$KINS/resources\n/market — marketplace prices\n/server — live server queues\n/version — current game version\n/quest — daily quests (auto-claim)\n/spinner — 🎡 free spin wheel (12h)\n/diag — auth, shard, process\n\n` +
-    `/rock — mining stone+coal ⛏ (di POND — node rapat, rate 3x world)\n/stone — mining khusus stone 🪨\n/coal — mining khusus coal ⬛\n/wood — woodcutting 🪓\n/fish — fishing 🎣\n/cook — masak ikan mentah jadi cooked 🍳\n/combat — hunt zombie ⚔️ (/combat boss = dragon 🐉)\n/auto — automatic orchestrator (smart switching) 🧠\n/stop — stop all\n/help — command list\n\n` +
+    `/rock — mining stone+coal ⛏ (di POND — node rapat, rate 3x world)\n/stone — mining khusus stone 🪨\n/coal — mining khusus coal ⬛\n/wood — woodcutting 🪓\n/fish — fishing 🎣 + auto-masak jadi cooked 🍳 (1 flow)\n/combat — hunt zombie ⚔️ (/combat boss = dragon 🐉)\n/auto — automatic orchestrator (smart switching) 🧠\n/stop — stop all\n/help — command list\n\n` +
     `<i>1 akun = 1 aktivitas (aman dari anti-cheat). Combat pakai bank-first + auto-survival.</i>`;
 }
 
@@ -508,7 +508,7 @@ const commands = {
   rock: () => startActivity('rock', (ctx) => loops.runRock(ctx)),
   stone: () => startActivity('stone', (ctx) => loops.runRock(ctx), { mode: 'stone' }),
   coal: () => startActivity('coal', (ctx) => loops.runRock(ctx), { mode: 'coal' }),
-  cook: () => startActivity('cook', (ctx) => loops.runCook(ctx)),
+  cook: () => startActivity('fish', (ctx) => loops.runFish(ctx)), // merge: cook = fish (mancing+masak 1 flow)
   wood: () => startActivity('wood', (ctx) => loops.runWood(ctx)),
   combat: (args) => {
     const boss = ['boss', 'dragon', 'b'].includes(String(args[0] || '').toLowerCase());
