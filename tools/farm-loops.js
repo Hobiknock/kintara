@@ -49,7 +49,7 @@ async function connectPresence(cli, onEvent, attempt = 0) {
     p.tut = -1; // tutorial selesai (akun farm)
     p.on('log', () => {});
     await p.connect();
-    await sleep(5000);
+    await sleep(2500); // cdknya 5 dtk → 2,5 dtk (presence ack udah cukup buat multi-tick)
     return p;
   } catch (e) {
     if (attempt < 2) {
@@ -143,6 +143,20 @@ function tileOff(region) {
   return -30.5;
 }
 
+// ── keluar pond ke WORLD dengan pola terbukti: setRegion langsung (bukan walkTo) ──
+// walkTo koordinat world dari pond = nyasar (region beda) → masak selalu gagal.
+async function exitPondToWorld(p, onEvent, tx, tz) {
+  if (p.region === 'pond') {
+    try { p.setRegion('world', 30.5, 0.5); } catch {}
+    let w = 0; while (p.region !== 'world' && w < 8000) { await sleep(1000); w += 1000; }
+  }
+  if (p.region === 'world') {
+    await p.walkTo(tx, tz, { maxSec: 14 }).catch(() => {});
+    await ssleep(800);
+  }
+  return p.region === 'world';
+}
+
 // Masuk Pond (pola runFish TERBUKTI): jalan ke portal world (30.5,0.5) → setRegion pond (-18.5,0.5).
 // Return true kalau region === 'pond'.
 async function gotoPond(p, onEvent, maxSec = 90) {
@@ -189,8 +203,8 @@ async function runRock(ctx) {
   // tunggu res_snap ngisi node (pond butuh beberapa detik)
   let waitN = 0;
   while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && waitN < 20000) { await sleep(1000); waitN += 1000; }
-  // Waypoint rotasi POND (sebaran node: cluster barat tile 4-26 & timur tile 21-37) — pakalau skip-storm
-  const POND_WP = [[8, -4], [14, 2], [10, 14], [2, 10], [-8, 12], [-14, 4], [-10, -4], [-2, -8], [6, 6], [-6, -6]];
+  // Waypoint rotasi POND — 12 titik (tambah 2 biar rotasi lebih rapat, kurangi waktu jalan kosong)
+  const POND_WP = [[8, -4], [14, 2], [10, 14], [2, 10], [-8, 12], [-14, 4], [-10, -4], [-2, -8], [6, 6], [-6, -6], [-18, -10], [18, 10]];
   let wpIdx = 0, skipStreak = 0, felledSinceMove = 0;
   const dead = new Map(); // key -> ts blacklist (node gagal/depleted)
   let stone = 0, coal = 0, metal = 0, fails = 0, skips = 0;
@@ -226,7 +240,7 @@ async function runRock(ctx) {
         }
       }
       if (dead.size) { dead.clear(); onEvent(`♻️ blacklist reset — cari node respawn${skips ? ` (${skips} skip mode ${mode})` : ''}`); skips = 0; }
-      await ssleep(rnd(800, 1500)); continue;
+      await ssleep(rnd(400, 800)); continue; // dipangkas
     }
     // jalan dulu ke samping node (realistis, kaya orang) — jarak pendek karena pilih terdekat
     const [C, R] = tgt.key.split(',').map(Number);
@@ -244,7 +258,7 @@ async function runRock(ctx) {
       onEvent(`✅ rock felled loot=${loot} x${y} (stone+${stone} coal+${coal} metal+${metal})`);
       dead.set(tgt.key, Date.now()); // node habis — tunggu respawn
       skipStreak = 0; felledSinceMove++; // panen sukses → reset streak, catat progres sejak rotasi
-      await ssleep(rnd(300, 900)); // jeda antar node (SPEED)
+      await ssleep(rnd(200, 600)); // jeda antar node — dipangkas (client-only; protokol tetap)
     } else {
       fails++; dead.set(tgt.key, Date.now() + (p.region === 'pond' ? 150000 : 0)); // pond: blacklist 2.5 mnt (respawn lambat)
       if (fails % 10 === 1) onEvent(`⚠️ ${fails} node skip (gagal/depleted)`);
@@ -288,7 +302,7 @@ async function runWood(ctx) {
       ctx.bump('felled'); ctx.bump('wood');
       onEvent(`✅ tree felled (wood+${wood})`);
       dead.set(tgt.key, Date.now());
-      await ssleep(rnd(300, 900));
+      await ssleep(rnd(200, 600)); // dipangkas
     } else {
       fails++; dead.set(tgt.key, Date.now());
       if (fails % 10 === 1) onEvent(`⚠️ ${fails} node skip (gagal/depleted)`);
@@ -688,12 +702,15 @@ async function doFishQuest(ctx, quest) {
       if (p.region === 'pond') { p.pos.x = -18.5; p.pos.z = 0; await p.walkTo(FISH_SPOT.x, FISH_SPOT.z, { maxSec: 12 }); }
     }
     let casts = 0, ok = 0;
+    let fishQN = Number(((await cli.me().catch(() => ({}))).backpack || {}).fish || 0); // counter lokal ikan mentah
     let noSpotMin = 0; // guard 3 menit tanpa spot → cek rod & stop kalau mati total
     while (!stop()) {
-      const q = await cli.dailyQuestProgress().catch(() => null);
-      const qq = (q?.dailyQuestConfig?.quests || []).find((x) => x.id === quest.id);
-      const pr = (q?.dailyQuest?.prog || {})[quest.id] || 0;
-      if (qq && pr >= qq.target) { onEvent(`✅ quest fish selesai (${pr}/${qq.target})`); (ctx.onImportant || (() => {}))(questPanel('QUEST SELESAI', [['🎣 fish', `${pr}/${qq.target} ✅`]], '✅')); break; }
+      if (casts % 20 === 0 && casts > 0) { // cek quest tiap 20 cast (hemat HTTP; dulu tiap cast)
+        const q = await cli.dailyQuestProgress().catch(() => null);
+        const qq = (q?.dailyQuestConfig?.quests || []).find((x) => x.id === quest.id);
+        const pr = (q?.dailyQuest?.prog || {})[quest.id] || 0;
+        if (qq && pr >= qq.target) { onEvent(`✅ quest fish selesai (${pr}/${qq.target})`); (ctx.onImportant || (() => {}))(questPanel('QUEST SELESAI', [['🎣 fish', `${pr}/${qq.target} ✅`]], '✅')); break; }
+      }
       if (p.region !== 'pond') { onEvent('🔌 keluar pond — reconnect'); try { p.close(); } catch {} p = await connectPresence(cli, onEvent); p.setRegion('pond', -11.5, 0); await sleep(3000); continue; }
       // cari spot aktif terdekat (server-driven, bukan tile statis)
       let spot = p.nearestFishSpot ? p.nearestFishSpot(p.pondTile().col, p.pondTile().row, 6) : null;
@@ -743,19 +760,19 @@ async function doFishQuest(ctx, quest) {
         const shardNum = Number(String(p.shard || '').replace(/[^0-9]/g, '')) || 1;
         const g = await cli.grantFishXp({ mountCatch: true, shardId: shardNum });
         p.setAct(null);
-        if (g?.ok !== false) { ok++; ctx.bump('fish'); onEvent(`🐟 quest catch ${ok}/${casts} (prog ${(await cli.dailyQuestProgress().catch(() => null))?.dailyQuest?.prog?.[quest.id] || '?'}/${quest.target})`); }
+        if (g?.ok !== false) { ok++; ctx.bump('fish'); fishQN++; onEvent(`🐟 quest catch ${ok}/${casts} fish=${fishQN}`); }
       } catch (e) { p.setAct(null); await ssleep(2000); }
-      // masak tiap 8 ikan — quest cooked_fish_meat butuh COOK, bukan cuma catch
-      const bp = (await cli.me().catch(() => ({}))).backpack || {};
-      if ((bp.fish || 0) >= 8) {
-        onEvent('🍳 masak batch...');
-        await p.walkTo(ROAST.x, ROAST.z, { maxSec: 14 }).catch(() => {});
-        await sleep(1500);
-        for (let i = 0; i < 8; i++) {
-          try { const r = await cli.grantCookXp({ mode: 'fish' }); if (r?.ok !== false) { ctx.bump('cooked'); } } catch { break; }
-          await sleep(4500);
+      // masak tiap 8 ikan — pakai helper (keluar pond benar + retry ROAST)
+      if (fishQN >= 8) {
+        onEvent('🍳 masak batch (quest)...');
+        const c = await cookBatchAtRoast(ctx, p, fishQN);
+        if (c > 0) fishQN -= c;
+        if (!(await gotoPond(p, onEvent))) onEvent('⚠️ gagal balik pond (quest)');
+        if (p.region === 'pond') {
+          try { p.equip('tool_fishing_rod'); } catch {}
+          await sleep(1500);
+          await p.walkTo(FISH_SPOT.x, FISH_SPOT.z, { maxSec: 12 }).catch(() => {});
         }
-        await p.walkTo(FISH_SPOT.x, FISH_SPOT.z, { maxSec: 14 }).catch(() => {});
       }
     }
   } finally { try { p.close(); } catch {} }
@@ -987,25 +1004,22 @@ function waitForBite(p, timeoutMs = 20000, stop = null) {
 }
 
 
-// ============ cook-at-roast helper (dipakai runFish & runCook) ============
-// Masak HARUS di dekat ROAST fire region WORLD (-14.5,-12.5), bukan pond.
-// Dari pond: keluar via portal timur -> world -> ROAST -> masak loop -> balik nanti.
+// ============ cook-at-roast helper (dipakai runFish & runCook & doFishQuest) ============
+// Masak HARUS di dekat ROAST fire region WORLD (-14.5,-12.5).
+// FIX UTAMA: keluar pond = setRegion('world', 30.5, 0.5) LANGSUNG (pola gotoPond dibalik).
+// walkTo koordinat world dari dalam pond = nyasar (koordinat beda region) -> masak gagal total.
 async function cookBatchAtRoast(ctx, p, count) {
   const { cli, stop, onEvent } = ctx;
-  const PORTAL = { x: 61 - 30.5, z: 31 - 30.5 };
   let cooked = 0, fails = 0;
-  // 1) pastikan di world & dekat ROAST
+  // 1) ke world dulu (kalau di pond/wild), lalu jalan ke ROAST
   if (/pond|wild/i.test(p.region || '')) {
-    onEvent('🚶 keluar pond -> ROAST (world)...');
-    await p.walkTo(PORTAL.x, PORTAL.z, { maxSec: 20 }).catch(() => {});
-    await ssleep(2000);
-    if (p.region === 'pond') p.setRegion('world', 0.5, 29.5); // fallback state fix
-    await p.walkTo(ROAST.x, ROAST.z, { maxSec: 14 }).catch(() => {});
-    await ssleep(1500);
+    onEvent('🚶 keluar region -> ROAST (world)...');
+    if (p.region === 'pond') await exitPondToWorld(p, onEvent, ROAST.x, ROAST.z);
+    else { try { p.setRegion('world', 0.5, 29.5); } catch {} await sleep(2000); await p.walkTo(ROAST.x, ROAST.z, { maxSec: 14 }).catch(() => {}); }
   } else {
     await p.walkTo(ROAST.x, ROAST.z, { maxSec: 14 }).catch(() => {});
-    await ssleep(1500);
   }
+  await ssleep(1200);
   // 2) masak loop (4.5 dtk/ikan — timer server, JANGAN diubah)
   while (!stop() && cooked < count) {
     try {
@@ -1013,7 +1027,12 @@ async function cookBatchAtRoast(ctx, p, count) {
       if (r?.ok !== false) { cooked++; ctx.bump('cooked'); persistLootAsync(cli, 'cooked_fish_meat', 1); persistLootAsync(cli, 'fish', -1); }
       else fails++;
     } catch { fails++; }
-    if (fails > 4) { onEvent(`⚠️ masak gagal ${fails}x — stop batch (jauh dari ROAST?)`); break; }
+    if (fails > 4) {
+      onEvent(`⚠️ masak gagal ${fails}x — reset pos ke ROAST & retry...`);
+      // pos mungkin nyasar: walk ulang ke ROAST + re-equip rod pasca region jump
+      await p.walkTo(ROAST.x, ROAST.z, { maxSec: 14 }).catch(() => {});
+      await ssleep(1200); fails = 0;
+    }
     if (cooked % 4 === 0 || cooked === count) onEvent(`🍳 masak ${cooked}/${count}`);
     await ssleep(4500); // 4.5 dtk/ikan — timer server
   }
@@ -1182,16 +1201,11 @@ async function runFish(ctx) {
         const c = await cookBatchAtRoast(ctx, p, fishN);
         cooked += c; fishN = Math.max(0, fishN - c);
         onEvent(`🍳 batch done: +${c} cooked (total ${cooked})`);
-        // balik ke pond & re-equip rod (server reset equip pas pindah region)
-        await p.walkTo(PORTAL.x, PORTAL.z, { maxSec: 20 }).catch(() => {});
-        if (Math.abs(p.pos.x - PORTAL.x) < 1.5 && Math.abs(p.pos.z - PORTAL.z) < 1.5) {
-          p.setRegion('pond', -18.5, 0.5);
-          let w = 0; while (p.region !== 'pond' && w < 10000) { await sleep(1000); w += 1000; }
-        }
+        // balik ke pond & re-equip rod (pola gotoPond terbukti — bukan walkTo dari world)
+        if (!(await gotoPond(p, onEvent))) onEvent('⚠️ gagal balik pond — coba loop berikutnya');
         if (p.region === 'pond') {
-          p.pos.x = -18.5; p.pos.z = 0;
           try { p.equip('tool_fishing_rod'); } catch {}
-          await sleep(2000);
+          await sleep(1500);
           await p.walkTo(FISH_SPOT.x, FISH_SPOT.z, { maxSec: 12 }).catch(() => {});
         }
       }
