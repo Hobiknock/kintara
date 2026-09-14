@@ -732,14 +732,9 @@ async function doFishQuest(ctx, quest) {
       p.fishBiteAt = null;
       p.setFishing(castCol, castRow, 0); // wait phase — mulai cast bener
       casts++; ctx.bump('cast');
-      // tunggu fish_bite dari server (max 20 dtk)
-      let biteAt = null;
-      for (let i = 0; i < 20 && !stop(); i++) {
-        await sleep(1000);
-        if (p.fishBiteAt) { biteAt = p.fishBiteAt; break; }
-        if (p.tileInFishSpot && p.tileInFishSpot(p.fishCastCol, p.fishCastRow) === false) break;
-      }
-      if (!biteAt) { p.setAct(null); await ssleep(rnd(400, 1200)); continue; }
+      // tunggu fish_bite — EVENT-DRIVEN (reaksi instan, dulu polling 1 dtk)
+      const biteAt = await waitForBite(p, 20000, stop);
+      if (!biteAt) { p.setAct(null); await ssleep(rnd(300, 800)); continue; }
       const waitMs = Math.max(0, biteAt - Date.now());
       if (waitMs > 0) await sleep(waitMs);
       p.setFishing(castCol, castRow, 1); await sleep(FISH_STRIKE_MS); // strike
@@ -973,6 +968,25 @@ async function ensureBait(cli, p, onEvent, target = 40, stop = null) {
 const FISH_STRIKE_MS = 2350;
 const FISH_REEL_MS = 1480;
 
+// ── tunggu fish_bite EVENT-DRIVEN (dulu polling 1 dtk = buang ~0.5 dtk/cast) ──
+// Resolve = timestamp bite, atau null kalau: spot pindah / timeout / stop.
+function waitForBite(p, timeoutMs = 20000, stop = null) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v) => { if (done) return; done = true; clearTimeout(timer); clearInterval(iv); p.removeListener('fish_bite', onBite); resolve(v); };
+    const onBite = () => { if (p.fishBiteAt) finish(p.fishBiteAt); };
+    const timer = setTimeout(() => finish(null), timeoutMs);
+    const iv = setInterval(() => {
+      if (stop && stop()) return finish(null);
+      if (p.tileInFishSpot && p.tileInFishSpot(p.fishCastCol, p.fishCastRow) === false) finish(null); // spot pindah
+      if (p.fishBiteAt) finish(p.fishBiteAt);
+    }, 250);
+    p.on('fish_bite', onBite);
+    if (p.fishBiteAt) onBite(); // udah keburu dateng sebelum listener nempel
+  });
+}
+
+
 // ============ cook-at-roast helper (dipakai runFish & runCook) ============
 // Masak HARUS di dekat ROAST fire region WORLD (-14.5,-12.5), bukan pond.
 // Dari pond: keluar via portal timur -> world -> ROAST -> masak loop -> balik nanti.
@@ -1045,6 +1059,7 @@ async function runFish(ctx) {
   const bait0 = await ensureBait(cli, p, onEvent, 40, stop).catch((e) => { onEvent('⚠️ bait: ' + String(e.message).slice(0, 50)); return 0; });
   onEvent(`🪶 bait siap: ${bait0}`);
   let casts = 0, ok = 0, cooked = 0;
+  let fishN = Number(((await cli.me().catch(() => ({}))).backpack || {}).fish || 0); // counter lokal — diupdate respons grantFishXp (hemat cli.me() tiap cast)
   let rodlessWarn = 0; // guard: nunggu spot miring tanpa rod = stop, jangan bakar waktu
   try {
     while (!stop()) {
@@ -1070,7 +1085,7 @@ async function runFish(ctx) {
         let waited = 0;
         while (!spot && waited < 30000 && !stop()) {
           spot = p.nearestFishSpot(p.pondTile().col, p.pondTile().row, 5);
-          if (!spot) { if (waited === 0) onEvent('⏳ nunggu fish_spots...'); await sleep(2000); waited += 2000; }
+          if (!spot) { if (waited === 0) onEvent('⏳ nunggu fish_spots...'); await sleep(500); waited += 500; }
         }
         // GUARD RODLESS: 60 dtk tanpa spot & rod gak equipped → cek & grant rod.
         // (server push fish_spots HANYA kalau rod equipped — tanpa rod = nunggu selamanya)
@@ -1112,7 +1127,7 @@ async function runFish(ctx) {
           }
         }
       }
-      if (!spot) { await ssleep(5000); continue; }
+      if (!spot) { await ssleep(2000); continue; }
       const pt = p.pondTile();
       const n = p.fishSpotSize || 2;
       const dc = Math.max(spot.c - pt.col, pt.col - (spot.c + n - 1), 0);
@@ -1127,16 +1142,11 @@ async function runFish(ctx) {
       p.fishBiteAt = null;
       p.setFishing(castCol, castRow, 0); // wait
       casts++; ctx.bump('cast');
-      // tunggu fish_bite (server kasih ms) — timeout 20 dtk (bukan 40; manusia re-cast cepat)
-      let biteAt = null;
-      for (let i = 0; i < 20 && !stop(); i++) {
-        await sleep(1000);
-        if (p.fishBiteAt) { biteAt = p.fishBiteAt; break; }
-        if (p.tileInFishSpot(p.fishCastCol, p.fishCastRow) === false) break; // spot pindah
-      }
-      if (!biteAt) { // gak ada gigitan — cancel & re-cast
+      // tunggu fish_bite — EVENT-DRIVEN (reaksi instan, dulu polling 1 dtk)
+      const biteAt = await waitForBite(p, 20000, stop);
+      if (!biteAt) { // gak ada gigitan / spot pindah — cancel & re-cast
         p.setAct(null);
-        await ssleep(rnd(400, 1200));
+        await ssleep(rnd(300, 800));
         continue;
       }
       // tunggu sampai ms habis lalu strike
@@ -1150,7 +1160,7 @@ async function runFish(ctx) {
         const shardNum = Number(String(p.shard || '').replace(/[^0-9]/g, '')) || 1;
         const g = await cli.grantFishXp({ mountCatch: true, shardId: shardNum });
         p.setAct(null);
-        if (g?.ok !== false) { ok++; ctx.bump('fish'); onEvent(`🐟 catch ok (${ok}/${casts}) fish=${g?.backpack?.fish ?? '?'} bait=${(g?.backpack?.invSlots || []).filter(s => s && s.t === 'bait_feather').reduce((a, s) => a + (s.n || 0), 0)}`); }
+        if (g?.ok !== false) { ok++; ctx.bump('fish'); const nf = Number(g?.backpack?.fish); if (Number.isFinite(nf)) fishN = nf; else fishN++; onEvent(`🐟 catch ok (${ok}/${casts}) fish=${g?.backpack?.fish ?? fishN} bait=${(g?.backpack?.invSlots || []).filter(s => s && s.t === 'bait_feather').reduce((a, s) => a + (s.n || 0), 0)}`); }
         else onEvent(`❌ grant gagal: ${g?.error || '?'}`);
       } catch (e) {
         p.setAct(null);
@@ -1166,12 +1176,11 @@ async function runFish(ctx) {
         else onEvent('cast err: ' + m.slice(0, 40));
         await sleep(2000);
       }
-      // masak tiap 8 ikan — ROAST ada di WORLD: keluar pond dulu (fix koordinat nyasar)
-      const bp = (await cli.me().catch(() => ({}))).backpack || {};
-      if ((bp.fish || 0) >= 8) {
+      // masak tiap 8 ikan — pakai counter fishN (respons grantFishXp; buang cli.me() per cast)
+      if (fishN >= 8) {
         onEvent('🍳 masak batch...');
-        const c = await cookBatchAtRoast(ctx, p, bp.fish);
-        cooked += c;
+        const c = await cookBatchAtRoast(ctx, p, fishN);
+        cooked += c; fishN = Math.max(0, fishN - c);
         onEvent(`🍳 batch done: +${c} cooked (total ${cooked})`);
         // balik ke pond & re-equip rod (server reset equip pas pindah region)
         await p.walkTo(PORTAL.x, PORTAL.z, { maxSec: 20 }).catch(() => {});
@@ -1187,7 +1196,7 @@ async function runFish(ctx) {
         }
       }
       if (!p.ready) { onEvent('🔌 reconnect...'); try { p.close(); } catch {} p = await connectPresence(cli, onEvent); }
-      await ssleep(rnd(1000, 2200)); // jeda antar cast (SPEED)
+      await ssleep(rnd(500, 1200)); // jeda antar cast — dipangkas (client-side; timer server tetap)
     }
   } finally { try { p.close(); } catch {} }
   return { casts, ok, cooked };
