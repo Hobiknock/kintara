@@ -186,7 +186,8 @@ async function runRock(ctx) {
   // mode: 'any' (default, stone+coal) | 'stone' (skip node coal) | 'coal' (HANYA node coal)
   const mode = ctx.mode || 'any';
   // zone: 'world' (default, zona rock lama) | 'pond' (ZONA BARU — node lebih rapat, respawn cepat)
-  const zone = ctx.zone || 'pond';
+  let zone = ctx.zone || 'pond'; const zone0 = zone; // zone dinamis: auto pindah pond↔world saat steril
+  let emptyRotas = 0, sterilityCount = 0; // penghitung area kosong → trigger pindah zona/shard
   const wantCoal = mode === 'coal';
   const skipCoal = mode === 'stone';
   onEvent(`⛏️ Mulai panen ${mode === 'coal' ? 'COAL (khusus node coal)' : mode === 'stone' ? 'STONE (skip node coal)' : 'stone+coal'}${zone === 'pond' ? ' di POND 🎣' : ''}...`);
@@ -232,16 +233,28 @@ async function runRock(ctx) {
         skipStreak++;
         if (skipStreak >= 3 || felledSinceMove === 0) {
           const wp = POND_WP[wpIdx % POND_WP.length]; wpIdx++;
+          emptyRotas++; // tiap rotasi habisnya area = sinyal area steril
           onEvent(`🔄 area habis — rotasi ke titik ${wp[0]},${wp[1]}...`);
           await p.walkTo(wp[0], wp[1], { maxSec: 20 }).catch(() => {});
           await ssleep(rnd(500, 1000)); skipStreak = 0; felledSinceMove = 0;
           let wn = 0; while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && wn < 8000) { await sleep(1000); wn += 1000; }
+          // AREA STERIL: 2x putaran waypoint penuh (24 rotasi) tanpa 1 pun felled → PINDAH ZONA otomatis
+          if (emptyRotas >= POND_WP.length * 2 && felledSinceMove === 0) {
+            emptyRotas = 0; sterilityCount++;
+            dead.clear(); // blacklist node zona lama gak boleh ikut ke zona baru
+            const target = zone === 'pond' ? 'world' : 'pond';
+            onEvent(`🧭 zona ${zone} steril (${sterilityCount}x) — pindah ke ${target === 'pond' ? 'POND' : 'zona rock WORLD'}...`);
+            if (target === 'pond') { if (!(await gotoPond(p, onEvent))) { zone = 'world'; await gotoResourceZone(p, onEvent); } }
+            else if (!(await gotoResourceZone(p, onEvent))) { zone = 'pond'; await gotoPond(p, onEvent); }
+            let wn2 = 0; while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && wn2 < 15000) { await sleep(1000); wn2 += 1000; }
+          }
           continue;
         }
       }
       if (dead.size) { dead.clear(); onEvent(`♻️ blacklist reset — cari node respawn${skips ? ` (${skips} skip mode ${mode})` : ''}`); skips = 0; }
       await ssleep(rnd(400, 800)); continue; // dipangkas
     }
+    emptyRotas = 0; // node ketemu → area ada isi, reset penghitung steril
     // jalan dulu ke samping node (realistis, kaya orang) — jarak pendek karena pilih terdekat
     const [C, R] = tgt.key.split(',').map(Number);
     const dstx = C + OFF, dstz = (R + 1) + OFF;
