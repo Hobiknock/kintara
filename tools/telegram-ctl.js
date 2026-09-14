@@ -102,6 +102,7 @@ async function startActivity(name, fn, opts = {}) {
   if (auto) return `🔄 AUTO mode jalan. Kirim /stop dulu kalau mau manual.`;
   if (current) return `⛔ Sedang jalan: ${current.name}. Kirim /stop dulu.`;
   const ctx = makeCtx(name, opts);
+  ctx.manual = true; // MODE MANUAL = TANPA BATAS: death cap, rodless-stop, retreat-exit → semua dimatikan (AUTO tetap pakai guard)
   current = { name, ctx, startedAt: Date.now() };
   (async () => {
     try {
@@ -126,8 +127,8 @@ async function startActivity(name, fn, opts = {}) {
     }
   })();
   return panel(`${activityLabel(name)} — MULAI`, [
-    ['Mode', 'Manual'],
-    ['Target', AUTO_TARGET[name] ? AUTO_TARGET[name].label : 'sampai /stop'],
+    ['Mode', 'Manual — TANPA BATAS'],
+    ['Target', 'jalan terus sampai /stop'],
   ], '🚀');
 }
 

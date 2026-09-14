@@ -518,6 +518,26 @@ async function retreatHeal(cli, p, pot, onEvent) {
   return 'recovered';
 }
 
+// ============ MANUAL-ONLY: bahan potion habis → panen wood sendiri, beli, lanjut (tanpa stop sesi) ============
+async function refillPotionsManual(ctx, p, pot, onEvent) {
+  const cli = ctx.cli;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    onEvent(`🪓 MANUAL tanpa batas: bahan potion habis — panen wood sendiri (usaha ${attempt}/3)...`);
+    try { p.close(); } catch {} // 1 akun 1 sesi presence — runWood buka sendiri
+    const sub = { cli, stop: ctx.stop, onEvent, counters: ctx.counters, bump: (k) => ctx.bump(k), get: (k) => ctx.get(k), onImportant: ctx.onImportant, manual: true };
+    try { await runWood(sub); } catch (e) { onEvent('⚠️ panen wood err: ' + String(e.message).slice(0, 60)); }
+    const r2 = await ensureCombatSupplies(cli, onEvent).catch(() => ({ health: 0, shield: 0, fatal: true }));
+    pot.health = r2.health; pot.shield = r2.shield;
+    if (!r2.fatal) break;
+  }
+  if (!(pot.health > 0)) return false; // bahan bener-bener habis di mana-mana
+  onEvent('🧪 potion siap lagi — reconnect & lanjut...');
+  const pn = await connectPresence(cli, onEvent);
+  Object.assign(p, pn);
+  try { p.equip('wild_sword'); } catch {}
+  return true;
+}
+
 async function runCombat(ctx, opts = {}) {
   const { cli, stop, onEvent } = ctx;
   const dragon = !!opts.dragon;
@@ -537,9 +557,18 @@ async function runCombat(ctx, opts = {}) {
   } catch (e) { onEvent('bank walk skip: ' + String(e.message).slice(0, 40)); }
   const pot = await ensureCombatSupplies(cli, onEvent);
   if (pot.fatal) {
-    try { const r = await bank.depositAll(cli); } catch {}
-    try { p.close(); } catch {}
-    return { kills: 0, err: 'no-potions' };
+    if (!ctx.manual) { // AUTO: stop biar gak bunuh diri
+      try { const r = await bank.depositAll(cli); } catch {}
+      try { p.close(); } catch {}
+      return { kills: 0, err: 'no-potions' };
+    }
+    // MANUAL tanpa batas: bahan habis → panen wood sendiri buat potion, sesi lanjut
+    if (!(await refillPotionsManual(ctx, p, pot, onEvent))) {
+      try { const r = await bank.depositAll(cli); } catch {}
+      try { p.close(); } catch {}
+      return { kills: 0, err: 'no-potions' };
+    }
+    try { const r = await bank.depositAll(cli); } catch {} // sisa bahan ke bank
   }
   try {
     const r = await bank.depositAll(cli);
@@ -585,9 +614,10 @@ async function runCombat(ctx, opts = {}) {
       p.wildMobs = []; // buang data mob basi — jangan mukul hantu
       p.setRegion('world', NORTH_PORTAL.x, NORTH_PORTAL.z + 1);
       await ssleep(5000);
-      // MATI = ILANG SEMUA (pedang, potion, resource bawaan). Jangan nekat:
-      // cek pedang + death cap 2/sesi. Lebih dari itu = material abis percuma.
-      if (deaths >= 2) { onEvent('🛑 mati 2x dalam sesi — STOP (cap anti bunuh diri). Repari pedang dulu (/combat lagi besok).'); return { kills: ctx.get('kill') || 0, deaths, retreats, err: 'death-cap' }; }
+      // MATI = ILANG SEMUA (pedang, potion, resource bawaan).
+      // Death cap 2/sesi: HANYA AUTO. MANUAL = tanpa batas — lanjut sampai /stop.
+      if (deaths >= 2 && !ctx.manual) { onEvent('🛑 mati 2x dalam sesi — STOP (cap anti bunuh diri). Repari pedang dulu (/combat lagi besok).'); return { kills: ctx.get('kill') || 0, deaths, retreats, err: 'death-cap' }; }
+      if (deaths >= 2 && ctx.manual) onEvent(`💀 mati ${deaths}x — MANUAL tanpa batas: ambil alat & lanjut...`);
       try {
         // MATI = ILANG SEMUA (pedang, potion, resource bawaan).
         // Strategi user: auto ambil alat-alat dulu (grant-tool gratis), baru masuk lagi.
@@ -596,7 +626,9 @@ async function runCombat(ctx, opts = {}) {
         // refill potion dari bahan bank: withdraw wood/stone → beli
         const r2 = await ensureCombatSupplies(cli, (m) => {});
         pot.health = r2.health; pot.shield = r2.shield;
-        if (r2.fatal) { onEvent('🛑 potion gak bisa diisi (bahan habis) — stop combat'); return { kills: ctx.get('kill') || 0, deaths, retreats, err: 'no-potions' }; }
+        if (r2.fatal && ctx.manual) { // MANUAL: panen bahan sendiri, jangan stop
+          if (!(await refillPotionsManual(ctx, p, pot, onEvent))) { onEvent('🛑 bahan potion habis total — stop.'); return { kills: ctx.get('kill') || 0, deaths, retreats, err: 'no-potions' }; }
+        } else if (r2.fatal) { onEvent('🛑 potion gak bisa diisi (bahan habis) — stop combat'); return { kills: ctx.get('kill') || 0, deaths, retreats, err: 'no-potions' }; }
         p.equip('wild_sword');
         // semua resource di-bank DULU — yang masuk wild cuma alat + potion
         try { const rb = await bank.depositAll(cli); if (rb.moved?.length) onEvent(`🏦 bank lagi: ${rb.moved.join(',')}`); } catch {}
@@ -611,7 +643,15 @@ async function runCombat(ctx, opts = {}) {
       } catch (e) { onEvent('⚠️ pasca-mati err: ' + String(e.message).slice(0, 60)); }
       continue;
     }
-    if (sv === 'retreat') { const r = await retreatHeal(cli, p, pot, onEvent); if (r === 'exited') return { kills: ctx.get('kill') || 0, deaths, retreats, exited: true }; retreats++; continue; }
+    if (sv === 'retreat') {
+      const r = await retreatHeal(cli, p, pot, onEvent);
+      if (r === 'exited' && !ctx.manual) return { kills: ctx.get('kill') || 0, deaths, retreats, exited: true };
+      if (r === 'exited') { // MANUAL tanpa batas: refill bahan & masuk wild lagi (region-check bawah yg masukin)
+        onEvent('🔄 MANUAL: potion habis, keluar wild — panen bahan & refill...');
+        if (!(await refillPotionsManual(ctx, p, pot, onEvent))) { onEvent('🛑 bahan habis total — stop.'); return { kills: ctx.get('kill') || 0, deaths, retreats, err: 'no-potions' }; }
+      }
+      retreats++; continue;
+    }
     // region check: kalau kelempar ke world (mis. exit wild gak sengaja), masuk lagi
     if (!/^wild/.test(p.region)) {
       onEvent('🔄 keluar dari wild tanpa sengaja — masuk lagi');
@@ -1198,9 +1238,13 @@ async function runFish(ctx) {
                 else onEvent('❌ grant rod gagal: ' + ((r && r.error) || '?'));
               }
             } catch (e) { onEvent('⚠️ cek rod err: ' + String(e.message).slice(0, 50)); }
-          } else if (rodlessWarn >= 3) {
+          } else if (rodlessWarn >= 3 && !ctx.manual) {
             onEvent(`🛑 ${rodlessWarn * 60} dtk gak ada spot (rod bermasalah?) — stop sesi fish. Restart /fish buat coba lagi.`);
             break;
+          } else if (rodlessWarn >= 3) {
+            // MANUAL tanpa batas: jangan stop — cycle ulang, cek rod lagi & terus tunggu spot
+            onEvent(`⏳ MANUAL: ${rodlessWarn * 60} dtk gak ada spot — cek rod ulang, lanjut tunggu...`);
+            rodlessWarn = 0;
           }
         } else rodlessWarn = 0;
         // semua spot di luar range 5? ambil terdekat apa pun & jalan mendekat
