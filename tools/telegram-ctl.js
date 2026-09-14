@@ -302,6 +302,7 @@ function fmtSummary(name, res, ct) {
   if (name === 'combat' || name === 'boss') { const why = { 'no-sword': '🛑 tanpa pedang', 'sword-lost': '🛑 pedang ilang pas mati', 'death-cap': '🛑 cap 2 mati', 'no-potions': '🛑 potion habis', 'no-wild': '🛑 gagal masuk wild' }[r.err]; return `${r.kills ?? c.kill ?? 0} ☠️${r.deaths ? ` • ${r.deaths} 💀` : ''}${r.retreats ? ` • ${r.retreats} 🏃` : ''}${why ? ` — ${why}` : ''}`; }
   if (name === 'fish') return `${r.ok ?? c.fish ?? 0} 🐟 / ${r.casts ?? c.cast ?? 0} cast`;
   if (name === 'spinner') return r.spun ? `🎡 spin OK${r.grant ? ` — ${r.grant.type || '?'} +${r.grant.n || r.grant.amount || '?'}` : ''}` : `spin gagal: ${r.err || '?'}`;
+  if (name === 'tutorial') return r.already ? '✅ Tutorial sudah selesai (akun udah tamat)' : r.step === -1 || r.step >= 28 ? `🎉 Selesai sampai step 28! (${r.okCount || 0} step dijalanin)` : `⏸ Berhenti di step ${(r.step || 0) + 1}/28`;
   const keys = Object.keys(r).filter((k) => typeof r[k] === 'number');
   return keys.length ? keys.map((k) => `${k} ${r[k]}`).join(' • ') : 'selesai';
 }
@@ -438,6 +439,16 @@ async function hVersion() {
   return `🧩 Game version: <code>${String(v?.sha || '?').slice(0, 8)}</code> ${v?.ok ? '✅' : ''}`;
 }
 
+// ── KATEGORI ITEM (urutan sesuai prioritas ekonomi) ─────────────
+const BAL_CATS = [
+  ['⛏ Mining', ['stone', 'coal', 'metal']],
+  ['🪓 Woodcut', ['wood']],
+  ['🎣 Fishing', ['fish', 'cooked_fish_meat']],
+  ['🧪 Potion & Bank', ['potion_health', 'potion_shield', 'bankPages', 'feather', 'leather', 'raw_meat']],
+];
+const BAL_EMOJI = { stone: '🪨', coal: '⬛', metal: '🔩', wood: '🪵', fish: '🐟', cooked_fish_meat: '🍖', potion_health: '❤️', potion_shield: '🛡', bankPages: '🏦', feather: '🪶', leather: '🟤', raw_meat: '🥩' };
+const KNOWN_BAL = new Set(BAL_CATS.flatMap(([, ks]) => ks));
+
 async function hBalance() {
   const c = await getClient();
   const me = await c.me();
@@ -445,7 +456,35 @@ async function hBalance() {
   const items = Object.keys(bp).filter((k) => typeof bp[k] === 'number' && bp[k] > 0 && !['gold', 'invSlots', 'bankSlots', 'equippedHotbar'].includes(k));
   let kins = '?';
   try { const t = await c.tokenBlimpStats(); kins = `$${Number(t.priceUsd).toFixed(6)} (${t.marketCapLabel || ''})`; } catch {}
-  return `💰 <b>Balance</b>\n🪙 gold: <b>${bp.gold || 0}</b>\n🪙 $KINS: <b>${kins}</b>\n📦 items: ${items.map((k) => `${k}=${bp[k]}`).join(', ')}`;
+  // harga market utk estimasi nilai stok
+  const floors = {};
+  await Promise.all(MARKET_ITEMS.map(async ([t]) => {
+    try { const r = await c.marketplaceStats(t); if (r?.floorGold != null) floors[t] = Number(r.floorGold); } catch {}
+  }));
+  let estGold = 0; const priced = [];
+  for (const k of items) {
+    const n = bp[k];
+    if (floors[k] != null) { estGold += n * floors[k]; priced.push(k); }
+  }
+  const L = ['💰 <b>Balance</b>', '', `🪙 <b>gold:</b> ${bp.gold || 0}`, `💎 <b>$KINS:</b> ${kins}`, ''];
+  for (const [cat, keys] of BAL_CATS) {
+    const rows = keys.filter((k) => items.includes(k));
+    if (!rows.length) continue;
+    L.push(cat);
+    for (const k of rows) {
+      const e = BAL_EMOJI[k] || '📦';
+      const v = floors[k] != null ? ` — ${(bp[k] * floors[k]).toLocaleString('en-US')}g` : '';
+      L.push(`  ${e} ${k.replace(/_/g, ' ')}: <b>${bp[k]}</b>${v}`);
+    }
+    L.push('');
+  }
+  const etc = items.filter((k) => !KNOWN_BAL.has(k));
+  if (etc.length) { L.push('📦 Others'); for (const k of etc) L.push(`  ${BAL_EMOJI[k] || '▫️'} ${k.replace(/_/g, ' ')}: <b>${bp[k]}</b>`); L.push(''); }
+  if (priced.length) {
+    L.push('📊 <b>Estimasi nilai stok</b> (harga floor market):');
+    L.push(`  💰 <b>~${estGold.toLocaleString('en-US')} gold</b> (${priced.length} item terharga)`);
+  }
+  return L.join('\n');
 }
 
 async function hDiag() {
