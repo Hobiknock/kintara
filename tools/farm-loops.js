@@ -544,10 +544,32 @@ async function refillPotionsManual(ctx, p, pot, onEvent) {
   }
   if (!(pot.health > 0)) return false; // bahan bener-bener habis di mana-mana
   onEvent('🧪 potion siap lagi — reconnect & lanjut...');
+  try { p.close(); } catch {}
   const pn = await connectPresence(cli, onEvent);
-  Object.assign(p, pn);
-  try { p.equip('wild_sword'); } catch {}
-  return true;
+  ctx._reattach?.(pn); // listener kill/hp/level-up dipasang ulang di instance BARU
+  try { pn.equip('wild_sword'); } catch {}
+  return pn; // presence instance BARU — caller WAJIB ganti referensi p
+}
+
+// pasang listener combat di instance presence (sesi mulai & SETIAP reconnect/refill —
+// listener lama gak ikut pindah ke instance baru, harus dipasang ulang)
+function attachCombatEvents(p, ctx, dragon) {
+  const { onEvent } = ctx;
+  watchLevelUps(p, ctx); // notif LEVEL UP ke chat
+  p.on('wm_kill', (d) => {
+    if (dragon && Number(d.dr) === 1) { ctx.bump('kill'); onEvent(`☠️ DRAGON KILLED #${ctx.get('kill')}`); ctx.onImportant?.(questPanel('DRAGON KILLED', [['⚔️ Total kill', `${ctx.get('kill')}`]], '🐉')); }
+    else if (!dragon && Number(d.zm) === 1) { ctx.bump('kill'); onEvent(`☠️ zombie killed #${ctx.get('kill')}`); if (ctx.get('kill') % 10 === 0) ctx.onImportant?.(questPanel('ZOMBIE MILESTONE', [['⚔️ Kill sesi', `${ctx.get('kill')} 🧟`]], '⚔️')); }
+  });
+  p.on('hp', (hp) => { if (hp <= 30) onEvent(`🩸 HP=${hp}`); });
+}
+
+// reconnect presence (WS beku/matip) — instance BARU + listener terpasang
+async function reconnectPresence(oldP, cli, onEvent, ctx, dragon) {
+  try { oldP.close(); } catch {}
+  const pn = await connectPresence(cli, onEvent);
+  attachCombatEvents(pn, ctx, dragon);
+  try { pn.equip('wild_sword'); } catch {}
+  return pn;
 }
 
 async function runCombat(ctx, opts = {}) {
@@ -555,13 +577,9 @@ async function runCombat(ctx, opts = {}) {
   const dragon = !!opts.dragon;
   const label = dragon ? '🐉 BOSS (dragon)' : '🧟 zombie';
   onEvent(`${label} mulai...`);
-  const p = await connectPresence(cli, onEvent);
-  watchLevelUps(p, ctx); // notif LEVEL UP ke chat
-  p.on('wm_kill', (d) => {
-    if (dragon && Number(d.dr) === 1) { ctx.bump('kill'); onEvent(`☠️ DRAGON KILLED #${ctx.get('kill')}`); ctx.onImportant?.(questPanel('DRAGON KILLED', [['⚔️ Total kill', `${ctx.get('kill')}`]], '🐉')); }
-    else if (!dragon && Number(d.zm) === 1) { ctx.bump('kill'); onEvent(`☠️ zombie killed #${ctx.get('kill')}`); if (ctx.get('kill') % 10 === 0) ctx.onImportant?.(questPanel('ZOMBIE MILESTONE', [['⚔️ Kill sesi', `${ctx.get('kill')} 🧟`]], '⚔️')); }
-  });
-  p.on('hp', (hp) => { if (hp <= 30) onEvent(`🩸 HP=${hp}`); });
+  let p = await connectPresence(cli, onEvent); // LET: berganti saat reconnect/refill
+  ctx._reattach = (pp) => attachCombatEvents(pp, ctx, dragon);
+  attachCombatEvents(p, ctx, dragon);
   // BELI POTION DULU (bahan panen masih di backpack — usul user), baru bank sisanya
   try {
     await p.walkTo(bank.BANK_WORLD.x, bank.BANK_WORLD.z, { maxSec: 30 });
@@ -575,11 +593,13 @@ async function runCombat(ctx, opts = {}) {
       return { kills: 0, err: 'no-potions' };
     }
     // MANUAL tanpa batas: bahan habis → panen wood sendiri buat potion, sesi lanjut
-    if (!(await refillPotionsManual(ctx, p, pot, onEvent))) {
+    const np = await refillPotionsManual(ctx, p, pot, onEvent);
+    if (!np) {
       try { const r = await bank.depositAll(cli); } catch {}
       try { p.close(); } catch {}
       return { kills: 0, err: 'no-potions' };
     }
+    p = np; // presence baru dari refill
     try { const r = await bank.depositAll(cli); } catch {} // sisa bahan ke bank
   }
   try {
@@ -612,17 +632,39 @@ async function runCombat(ctx, opts = {}) {
   onEvent('✅ di Wilderness, tunggu mob...');
   let deaths = 0, retreats = 0, noMob = 0;
   while (!stop()) {
+    // WS BEKU-detek (bug 40mnt diam + mati 4x TANPA log): TCP half-open — readyState OPEN tapi data beku,
+    // bot mukul mob hantu sementara char asli dimakan zombie. Data >60dtk tanpa update / kirim gagal 5x → reconnect.
+    if (p.staleMs() > 60000 || p.sendFailCount() >= 5) {
+      onEvent(`⚠️ WS beku ${Math.round(p.staleMs() / 1000)}dtk (kirim gagal ${p.sendFailCount()}x) — reconnect...`);
+      try { p = await reconnectPresence(p, cli, onEvent, ctx, dragon); }
+      catch (e) { onEvent('⚠️ reconnect gagal: ' + String(e.message).slice(0, 50)); await ssleep(15000); continue; }
+      continue; // loop ulang: survival/region-check atur posisi
+    }
     // tunggu mob
     for (let w = 0; w < 15 && !p.wildMobs.some((m) => m.alive && (dragon ? m.d === 1 : true)); w++) {
       await sleep(2000);
       if (w === 5) p.sendWildManifest([]);
     }
     const pool = p.wildMobs.filter((m) => m.alive && (dragon ? m.d === 1 : true));
-    if (!pool.length) { noMob++; if (noMob % 5 === 0) onEvent('⏳ nunggu mob respawn...'); await ssleep(3000); continue; }
+    if (!pool.length) {
+      noMob++;
+      if (noMob % 5 === 0) onEvent('⏳ nunggu mob respawn...');
+      // di luar wild & gak ada mob (mis. habis reconnect/mati) — jangan nunggu selamanya, masuk lagi
+      if (noMob >= 3 && !/^wild/.test(p.region)) {
+        onEvent('🔄 di luar wild tanpa mob — masuk wild lagi');
+        p.wildMobs = [];
+        await p.walkTo(NORTH_PORTAL.x, NORTH_PORTAL.z, { until: () => /^wild/.test(p.region), maxSec: 30 }).catch(() => {});
+        if (!/^wild/.test(p.region)) { const sp = wildWorld(25, 48); p.setRegion('wild', sp.x, sp.z); await sleep(3000); }
+        p.sendWildManifest([]);
+        noMob = 0;
+      }
+      await ssleep(3000); continue;
+    }
     noMob = 0;
     const sv = await survival(cli, p, pot, onEvent);
     if (sv === 'dead') {
       deaths++;
+      onEvent(`💀 MATI #${deaths} — bawaan ilang semua, re-gear & masuk lagi...`); // SETIAP mati ke-log (dulu: diam total)
       p.wildMobs = []; // buang data mob basi — jangan mukul hantu
       p.setRegion('world', NORTH_PORTAL.x, NORTH_PORTAL.z + 1);
       await ssleep(5000);
@@ -639,7 +681,9 @@ async function runCombat(ctx, opts = {}) {
         const r2 = await ensureCombatSupplies(cli, (m) => {});
         pot.health = r2.health; pot.shield = r2.shield;
         if (r2.fatal && ctx.manual) { // MANUAL: panen bahan sendiri, jangan stop
-          if (!(await refillPotionsManual(ctx, p, pot, onEvent))) { onEvent('🛑 bahan potion habis total — stop.'); return { kills: ctx.get('kill') || 0, deaths, retreats, err: 'no-potions' }; }
+          const np = await refillPotionsManual(ctx, p, pot, onEvent);
+          if (!np) { onEvent('🛑 bahan potion habis total — stop.'); return { kills: ctx.get('kill') || 0, deaths, retreats, err: 'no-potions' }; }
+          p = np; // presence baru dari refill
         } else if (r2.fatal) { onEvent('🛑 potion gak bisa diisi (bahan habis) — stop combat'); return { kills: ctx.get('kill') || 0, deaths, retreats, err: 'no-potions' }; }
         p.equip('wild_sword');
         // semua resource di-bank DULU — yang masuk wild cuma alat + potion
@@ -660,7 +704,9 @@ async function runCombat(ctx, opts = {}) {
       if (r === 'exited' && !ctx.manual) return { kills: ctx.get('kill') || 0, deaths, retreats, exited: true };
       if (r === 'exited') { // MANUAL tanpa batas: refill bahan & masuk wild lagi (region-check bawah yg masukin)
         onEvent('🔄 MANUAL: potion habis, keluar wild — panen bahan & refill...');
-        if (!(await refillPotionsManual(ctx, p, pot, onEvent))) { onEvent('🛑 bahan habis total — stop.'); return { kills: ctx.get('kill') || 0, deaths, retreats, err: 'no-potions' }; }
+        const np = await refillPotionsManual(ctx, p, pot, onEvent);
+        if (!np) { onEvent('🛑 bahan habis total — stop.'); return { kills: ctx.get('kill') || 0, deaths, retreats, err: 'no-potions' }; }
+        p = np; // presence baru dari refill
       }
       retreats++; continue;
     }
@@ -677,13 +723,17 @@ async function runCombat(ctx, opts = {}) {
       p.sendWildManifest([]);
       continue;
     }
-    // target terdekat
-    let target = null, bd = Infinity;
+    // target paling TERISOLASI (bukan sekadar terdekat): mukul di kerumunan = kena serang balik beruntun
+    let target = null, bd = Infinity, bScore = Infinity;
     const me = p.wildTile();
     for (const m of pool) {
       if (m.col == null) continue;
       const d = Math.max(Math.abs(m.col - me.col), Math.abs(m.row - me.row));
-      if (d < bd) { bd = d; target = m; }
+      if (d > 10) continue; // terlalu jauh — skip, tunggu respawn
+      let nbrs = 0; // zombie lain radius 2 dari target — bakal ikut nyerang kita
+      for (const o of pool) if (o !== m && o.col != null && Math.max(Math.abs(o.col - m.col), Math.abs(o.row - m.row)) <= 2) nbrs++;
+      const score = d + nbrs * 5; // prioritas: dekat + sepi
+      if (score < bScore) { bScore = score; bd = d; target = m; }
     }
     if (!target) { await ssleep(2000); continue; }
     if (bd > 1) {
@@ -704,8 +754,9 @@ async function runCombat(ctx, opts = {}) {
       // stale guard: data mob lebih dari 2 mnt tanpa update & 12 swing tanpa kill → skip
       const c = Math.max(Math.abs(m.col - p.wildTile().col), Math.abs(m.row - p.wildTile().row));
       if (c > 1) break;
-      p.sendWildMobHit(ti, 1);
-      ctx.bump('hits');
+      if (!p.sendWildMobHit(ti, 1)) break; // WS mati — jangan swing mob hantu & jangan feed watchdog hit palsu
+      ctx.bump('hits'); // watchdog: hanya hit yg BENER2 terkirim ke server
+      if (p.staleMs() > 45000) { onEvent('⚠️ data server beku saat fight — putus, reconnect di loop atas'); break; }
       await sleep(SWING_CD);
       const sv2 = await survival(cli, p, pot, onEvent);
       if (sv2 === 'retreat') break;
