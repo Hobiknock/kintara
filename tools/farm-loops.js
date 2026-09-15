@@ -632,6 +632,7 @@ async function runCombat(ctx, opts = {}) {
   onEvent('✅ di Wilderness, tunggu mob...');
   let deaths = 0, retreats = 0, noMob = 0;
   while (!stop()) {
+    ctx._lastBeat = Date.now(); // heartbeat: combat loop masih hidup — watchdog jangan bunuh
     // WS BEKU-detek (bug 40mnt diam + mati 4x TANPA log): TCP half-open — readyState OPEN tapi data beku,
     // bot mukul mob hantu sementara char asli dimakan zombie. Data >60dtk tanpa update / kirim gagal 5x → reconnect.
     if (p.staleMs() > 60000 || p.sendFailCount() >= 5) {
@@ -643,11 +644,13 @@ async function runCombat(ctx, opts = {}) {
     // tunggu mob
     for (let w = 0; w < 15 && !p.wildMobs.some((m) => m.alive && (dragon ? m.d === 1 : true)); w++) {
       await sleep(2000);
+      ctx._lastBeat = Date.now(); // heartbeat saat tunggu mob — watchdog gak boleh bunuh fase ini
       if (w === 5) p.sendWildManifest([]);
     }
     const pool = p.wildMobs.filter((m) => m.alive && (dragon ? m.d === 1 : true));
     if (!pool.length) {
       noMob++;
+      ctx._lastBeat = Date.now(); // heartbeat saat gak ada mob — loop masih hidup
       if (noMob % 5 === 0) onEvent('⏳ nunggu mob respawn...');
       // di luar wild & gak ada mob (mis. habis reconnect/mati) — jangan nunggu selamanya, masuk lagi
       if (noMob >= 3 && !/^wild/.test(p.region)) {
