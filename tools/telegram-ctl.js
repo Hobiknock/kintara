@@ -63,11 +63,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let current = null; // { name, stopFlag, startedAt, stats, notif }
 function makeCtx(name, opts = {}) {
   const ctx = {
-    name, _stop: false, counters: {}, ...opts,
+    name, _stop: false, _lastBeat: Date.now(), counters: {}, ...opts,
     stop: () => ctx._stop,
-    bump: (k) => { ctx.counters[k] = (ctx.counters[k] || 0) + 1; },
+    bump: (k) => { ctx.counters[k] = (ctx.counters[k] || 0) + 1; ctx._lastBeat = Date.now(); },
     get: (k) => ctx.counters[k] || 0,
     onEvent: (msg) => {
+      ctx._lastBeat = Date.now(); // heartbeat watchdog: bukti aktivitas masih jalan
       // progress cuma ke file log — progress di chat TIDAK dikirim (cek via /status)
       log(`[${name}] ${msg}`);
     },
@@ -570,8 +571,23 @@ const commands = {
   await tg.setMyCommands(tgMenu).catch(() => {});
   log('menu command terpasang (' + tgMenu.length + ' cmd)');
   await tg.send('🤖 Kintara farm bot ONLINE — /help').catch(() => {});
+  // WATCHDOG: aktivitas diam >10 mnt (loop hang/nyangkut) = paksa STOP + kabari user;
+  // masih macet 3 mtk kemudian = exit → keeper restart proses (bot selalu hidup lagi).
+  let pollFails = 0; // fetch-failure BERUNTUN → exit, keeper restart = koneksi TCP Telegram fresh
   for (;;) {
-    try { await tg.pollCommands(commands); } catch (e) { log('poll err: ' + e.message); }
+    try { const ok = await tg.pollCommands(commands); pollFails = ok === false ? pollFails + 1 : 0; } catch (e) { pollFails++; log('poll err: ' + e.message); }
+    if (pollFails >= 5) { log('[telegram] 5x gagal poll beruntun — exit (keeper restart, koneksi fresh)'); process.exit(3); }
+    if (current) {
+      const staleMs = Date.now() - (current.ctx._lastBeat || current.startedAt);
+      if (staleMs > 10 * 60000 && !current.ctx._stop) {
+        current.ctx._stop = true;
+        log(`[watchdog] ${current.name} diam ${Math.round(staleMs / 60000)} mnt — paksa STOP`);
+        await tg.send(`⚠️ [watchdog] ${current.name} macet ${Math.round(staleMs / 60000)} mnt — auto-STOP. Kirim command lagi buat lanjut.`).catch(() => {});
+      } else if (staleMs > 13 * 60000 && current.ctx._stop) {
+        log('[watchdog] masih macet setelah STOP — restart proses (keeper auto-restart)');
+        process.exit(2);
+      }
+    }
     await sleep(1500);
   }
 })().catch((e) => { log('FATAL ' + e.message); process.exit(1); });

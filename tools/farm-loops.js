@@ -148,9 +148,10 @@ function tileOff(region) {
 // Node rock beda per-shard. Kalau zona pond & world dua-duanya steril di shard
 // aktif, cek shard lain (s1..s6): connect singkat -> masuk world rock zone ->
 // tunggu res_snap -> hitung node rock hidup. Balik daftar {shard, live} + best.
-async function scanShardsForRocks(cli, onEvent, shardList = ['s1', 's2', 's3', 's4', 's5', 's6']) {
+async function scanShardsForRocks(cli, onEvent, shardList = ['s1', 's2', 's3', 's4', 's5', 's6'], stop = null) {
   const results = [];
   for (const s of shardList) {
+    if (stop && stop()) break; // /stop saat scan shard — jangan lanjut shard berikutnya
     let p = null;
     try {
       p = await connectPresence(cli, onEvent, 0, s);
@@ -291,7 +292,7 @@ async function runRock(ctx) {
             if (sterilityCount % 2 === 0 && fails >= 40 && felledSinceMove === 0) {
               onEvent('🛰️ dua zona steril — scan shard buat node rock hidup...');
               try { p.close(); } catch {} // tutup sesi lama dulu — jangan 2 sesi 1 akun pas scan
-              const scan = await scanShardsForRocks(cli, onEvent);
+              const scan = await scanShardsForRocks(cli, onEvent, undefined, stop);
               const best = scan.find((x) => x.live >= 3);
               onEvent(`🛰️ hasil scan: ${scan.map((x) => `${x.shard}=${x.live}`).join(', ')}`);
               if (best) {
@@ -306,7 +307,11 @@ async function runRock(ctx) {
                   if (await gotoResourceZone(p, onEvent)) zone = 'world';
                   let wn4 = 0; while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && wn4 < 10000) { await sleep(1000); wn4 += 1000; }
                 }
-              } else onEvent('🛰️ semua shard steril — breather 90 dtk nunggu respawn...'), await sleep(90000);
+              } else {
+                // breather 90 dtk → 9x (10 dtk + cek /stop) — /stop gak perlu nunggu 90 dtk
+                onEvent('🛰️ semua shard steril — breather 90 dtk nunggu respawn (/stop responsif)...');
+                for (let b = 0; b < 9 && !stop(); b++) await sleep(10000);
+              }
             }
           }
           continue;
@@ -357,7 +362,8 @@ async function runWood(ctx) {
   if (!(await gotoResourceZone(p, onEvent, 90, 'tree'))) onEvent(`⚠️ belum di zona tree (region=${p.region}) — coba node sekitar`);
   const dead = new Map(); // key -> ts blacklist
   let wood = 0, fails = 0;
-  while (!stop()) {
+  const targetWood = ctx.targetWood || 0; // refill potion: auto-berhenti saat bahan cukup (jgn jalan selamanya)
+  while (!stop() && !(targetWood && wood >= targetWood)) {
     const tgt = pickNodeFixed(p, ['tree'], dead);
     if (!tgt) {
       if (dead.size) { dead.clear(); onEvent('♻️ blacklist reset — cari node respawn'); }
@@ -385,6 +391,7 @@ async function runWood(ctx) {
       try { p.close(); } catch {}
       const pn = await connectPresence(cli, onEvent); Object.assign(p, pn); }
   }
+  if (targetWood && wood >= targetWood) onEvent(`🎯 wood ${wood}/${targetWood} — cukup buat potion, selesai panen`);
   try { p.close(); } catch {}
   await flushPersist();
   return { wood, fails };
@@ -522,9 +529,14 @@ async function retreatHeal(cli, p, pot, onEvent) {
 async function refillPotionsManual(ctx, p, pot, onEvent) {
   const cli = ctx.cli;
   for (let attempt = 1; attempt <= 3; attempt++) {
-    onEvent(`🪓 MANUAL tanpa batas: bahan potion habis — panen wood sendiri (usaha ${attempt}/3)...`);
+    // TARGET (resep v2026: health potion = 60 wood/slot): panen CUKUP buat beli — jgn jalan selamanya
+    const me = await cli.me().catch(() => null);
+    const haveH = Number(me?.backpack?.potion_health) || 0;
+    const needH = Math.max(0, 6 - haveH);
+    const targetWood = needH * 60 + 60; // buffer +60
+    onEvent(`🪓 MANUAL tanpa batas: bahan potion habis — panen wood target ${targetWood} (usaha ${attempt}/3)...`);
     try { p.close(); } catch {} // 1 akun 1 sesi presence — runWood buka sendiri
-    const sub = { cli, stop: ctx.stop, onEvent, counters: ctx.counters, bump: (k) => ctx.bump(k), get: (k) => ctx.get(k), onImportant: ctx.onImportant, manual: true };
+    const sub = { cli, stop: ctx.stop, onEvent, counters: ctx.counters, bump: (k) => ctx.bump(k), get: (k) => ctx.get(k), onImportant: ctx.onImportant, manual: true, targetWood };
     try { await runWood(sub); } catch (e) { onEvent('⚠️ panen wood err: ' + String(e.message).slice(0, 60)); }
     const r2 = await ensureCombatSupplies(cli, onEvent).catch(() => ({ health: 0, shield: 0, fatal: true }));
     pot.health = r2.health; pot.shield = r2.shield;

@@ -62,6 +62,19 @@ Lalu start:
 ~/kintara-bot/start.sh
 ```
 
+### 🛡️ Persistensi (otomatis terpasang di VPS kamu)
+
+Installer & `start.sh` otomatis pasang cron di VPS kamu — bot **tersimpan dan tetap hidup**:
+
+| Kejadian | Yang terjadi |
+|---|---|
+| Bot crash | Keeper auto-restart dalam 10 detik |
+| Screen/keeper mati total | Cron keep-alive bangunin lagi (maks 5 menit) |
+| **VPS reboot / restart** | **Bot auto-start sendiri saat boot** |
+| `git pull` update | `.env` & log kamu gak pernah ketimpa — aman |
+| Mau berhenti | `~/kintara-bot/stop.sh` — stop **permanen** (cron gak bangunin lagi) |
+| Nyalain lagi | `~/kintara-bot/start.sh` |
+
 ### Install manual (kalau one-line gak jalan)
 
 <details>

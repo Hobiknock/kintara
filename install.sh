@@ -1,7 +1,8 @@
 #!/bin/bash
 # ============================================
 # KINTARA BOT — ONE-LINE INSTALLER
-# Dipanggil via: curl -sL https://raw.githubusercontent.com/USERNAME/kintara-bot/main/install.sh | bash
+# Dipanggil via: curl -sL https://raw.githubusercontent.com/Hobiknock/kintara-bot/main/install.sh | bash
+# Semua data (.env, log) tersimpan & dipertahankan di VPS kamu.
 # ============================================
 set -e
 
@@ -32,16 +33,18 @@ if [ "$NODE_MAJOR" -lt 18 ]; then
 fi
 echo "✅ Node.js v$(node -v)"
 
-# 2) screen (untuk jalanin bot persisten)
-if ! command -v screen >/dev/null 2>&1; then
-  echo "📦 Installing screen..."
-  if command -v apt-get >/dev/null 2>&1; then sudo apt-get install -y -qq screen
-  elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y screen
-  elif command -v apk >/dev/null 2>&1; then sudo apk add screen
+# 2) screen + cron (buat persistensi)
+for pkg in screen cron; do
+  if ! command -v "$pkg" >/dev/null 2>&1; then
+    echo "📦 Installing $pkg..."
+    if command -v apt-get >/dev/null 2>&1; then sudo apt-get install -y -qq "$pkg"
+    elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y "$pkg"
+    elif command -v apk >/dev/null 2>&1; then sudo apk add "$pkg"
+    fi
   fi
-fi
+done
 
-# 3) Clone repo
+# 3) Clone / update repo (.env & log lokal gak tersentuh — aman buat update)
 if [ -d "$INSTALL_DIR/.git" ]; then
   echo "🔄 Repo udah ada — pull update..."
   git -C "$INSTALL_DIR" pull --ff-only 2>/dev/null || true
@@ -50,18 +53,27 @@ else
   git clone "$REPO_URL" "$INSTALL_DIR"
 fi
 cd "$INSTALL_DIR"
+chmod +x keeper.sh start.sh stop.sh persist.sh 2>/dev/null || true
 
 # 4) Dependencies
 echo "📦 Installing dependencies..."
 npm install --omit=dev --no-fund --no-audit
 
-# 5) .env
+# 5) .env (dipertahankan kalau udah ada — gak pernah ditimpa)
 if [ ! -f .env ]; then
   cp .env.example .env
-  echo ""
-  echo "════════════════════════════════════════════════"
+  ENV_READY=0
+else
+  ENV_READY=1
+fi
+
+# 6) Persistensi VPS: auto-start saat reboot + keep-alive tiap 5 menit
+bash ./persist.sh
+
+echo ""
+echo "════════════════════════════════════════════════"
+if [ "$ENV_READY" = "0" ]; then
   echo "✅ INSTALL SELESAI — tapi belum bisa jalan!"
-  echo "════════════════════════════════════════════════"
   echo ""
   echo "👉 LANGKAH TERAKHIR (WAJIB, isi sendiri):"
   echo "   nano ~/kintara-bot/.env"
@@ -72,11 +84,16 @@ if [ ! -f .env ]; then
   echo ""
   echo "   Abis itu jalanin:"
   echo "   ~/kintara-bot/start.sh"
-  echo ""
-  echo "🤖 Kirim /help ke bot kamu di Telegram untuk daftar command."
 else
-  echo "✅ .env udah ada — skip"
+  echo "✅ INSTALL SELESAI — .env kamu udah ada (gak diubah)."
   echo ""
   echo "🚀 Jalanin bot: ~/kintara-bot/start.sh"
 fi
 echo ""
+echo "🛡️ Persistensi otomatis AKTIF di VPS kamu:"
+echo "   • Crash       → keeper auto-restart dalam 10 detik"
+echo "   • Mati total  → cron bangunin lagi tiap 5 menit"
+echo "   • Reboot VPS  → bot auto-start sendiri"
+echo "   • Stop permanen → ~/kintara-bot/stop.sh (start.sh buat nyalain lagi)"
+echo ""
+echo "🤖 Kirim /help ke bot kamu di Telegram untuk daftar command."

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Kintara bot — starter persisten (screen + auto-restart)
+# Kintara bot — starter persisten (screen + keeper + cron)
 cd "$(dirname "$0")"
 
 # cek .env
@@ -17,6 +17,10 @@ if grep -q "IsiPrivateKeyKamuDisini" .env; then
 fi
 
 mkdir -p recon logs
+rm -f recon/STOP   # angkat flag stop permanen
+
+# pastikan cron persistensi kepasang (auto-start saat reboot + keep-alive 5 mnt)
+bash ./persist.sh
 
 # hentikan session lama kalau ada
 screen -S kintara -X quit 2>/dev/null || true
@@ -25,9 +29,10 @@ screen -S kintara -X quit 2>/dev/null || true
 screen -dmS kintara bash -c "$(pwd)/keeper.sh"
 sleep 3
 if screen -ls 2>/dev/null | grep -q kintara; then
-  echo "🚀 Bot jalan di screen 'kintara' (auto-restart + cron keep-alive)"
+  echo "🚀 Bot jalan di screen 'kintara'"
+  echo "   🛡️ Persisten: crash → auto-restart 10 dtk • mati total → cron bangunin ≤ 5 mnt • reboot VPS → auto-start"
   echo "   Cek log: tail -f $(pwd)/recon/telegram-ctl.log"
-  echo "   Stop:    screen -S kintara -X quit"
+  echo "   Stop:    $(pwd)/stop.sh   (permanen — cron gak bangunin lagi)"
   echo "   Chat bot kamu di Telegram → /help"
 else
   echo "⚠️ Gagal start — cek log: $(pwd)/recon/telegram-ctl.log"
