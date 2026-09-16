@@ -1258,6 +1258,20 @@ function waitForBite(p, timeoutMs = 20000, stop = null) {
 async function cookBatchAtRoast(ctx, p, count) {
   const { cli, stop, onEvent } = ctx;
   let cooked = 0, fails = 0;
+  // FUEL CHECK: masak butuh raw fish + WOOD (bahan bakar roast pit). Wood abis = gagal selamanya.
+  // Fix 16 Sep: cek dulu, kalau kurang → panen wood dulu (runWood di POND — cepet), baru masak.
+  try {
+    const bp0 = ((await cli.me()).backpack) || {};
+    const needWood = Math.min(12, Math.max(4, count)); // ±1 wood/ikan, buffer dikit
+    const haveWood = Number(bp0.wood) || 0;
+    if (haveWood < needWood) {
+      onEvent(`🪵 wood kurang buat masak (${haveWood}/${needWood}) — panen wood dulu...`);
+      try { if (p && p.ready) p.close(); } catch {} // 1 akun 1 sesi presence — runWood buka sendiri
+      const gotWood = await runWood(ctx);
+      onEvent(`🪵 wood siap: +${gotWood.wood || 0} — balik ke ROAST...`);
+      p = await connectPresence(cli, onEvent); // sesi presence baru buat masak
+    }
+  } catch (e) { onEvent('⚠️ cek wood err: ' + String(e.message).slice(0, 50)); }
   // 1) ke world dulu (kalau di pond/wild), lalu jalan ke ROAST
   if (/pond|wild/i.test(p.region || '')) {
     onEvent('🚶 keluar region -> ROAST (world)...');
