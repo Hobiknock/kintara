@@ -50,7 +50,7 @@ async function connectPresence(cli, onEvent, attempt = 0, forceShard = null) {
     p.tut = -1; // tutorial selesai (akun farm)
     p.on('log', () => {});
     await p.connect();
-    await sleep(2500); // cdknya 5 dtk → 2,5 dtk (presence ack udah cukup buat multi-tick)
+    await sleep(1400); // cdknya 5 dtk → 2,5 dtk (presence ack udah cukup buat multi-tick)
     return p;
   } catch (e) {
     if (attempt < 2) {
@@ -100,7 +100,7 @@ function persistLootAsync(cli, loot, yld = NODE_YIELD) {
 }
 async function flushPersist() { await _persistChain; }
 
-function pickNodeFixed(p, kinds, avoid = null, avoidMs = 120000) {
+function pickNodeFixed(p, kinds, avoid = null, avoidMs = 45000) {
   const here = { c: Math.round(p.pos.x - tileOff(p.region)), r: Math.round(p.pos.z - tileOff(p.region)) };
   const now = Date.now();
   let b = null, bd = Infinity;
@@ -127,13 +127,13 @@ const WORLD_TREE_C = { x: 5.5 - 30.5, z: 22.5 - 30.5 }; // cluster tree live (co
 // Pulangkan player ke zona resource world (dipakai /auto sebelum rock/wood — dari pond/wild/eldergrove).
 async function gotoResourceZone(p, onEvent, maxSec = 90, zone = 'rock') {
   // kalau bukan world: keluar via setRegion ke tile portal world yang sesuai
-  if (p.region === 'pond') { try { p.setRegion('world', 30.5, 0.5); await sleep(3000); } catch {} }
-  if (p.region === 'eldergrove') { try { await p.walkTo(0.5, -24.5, { maxSec: 25 }).catch(() => {}); p.setRegion('world', 0.5, 29.5); await sleep(3000); } catch {} }
-  if (/^wild/.test(p.region || '')) { try { p.setRegion('world', NORTH_PORTAL.x, NORTH_PORTAL.z + 1); await sleep(3000); } catch {} }
+  if (p.region === 'pond') { try { p.setRegion('world', 30.5, 0.5); await sleep(1600); } catch {} }
+  if (p.region === 'eldergrove') { try { await p.walkTo(0.5, -24.5, { maxSec: 25 }).catch(() => {}); p.setRegion('world', 0.5, 29.5); await sleep(1600); } catch {} }
+  if (/^wild/.test(p.region || '')) { try { p.setRegion('world', NORTH_PORTAL.x, NORTH_PORTAL.z + 1); await sleep(1600); } catch {} }
   if (p.region !== 'world') return false;
   const c = zone === 'tree' ? WORLD_TREE_C : WORLD_ROCK_C;
   await p.walkTo(c.x, c.z, { maxSec }).catch(() => {});
-  await sleep(1500);
+  await sleep(900);
   return p.region === 'world';
 }
 
@@ -160,7 +160,7 @@ async function scanShardsForRocks(cli, onEvent, shardList = ['s1', 's2', 's3', '
       await p.walkTo(9 - 30.5, 49.5 - 30.5, { maxSec: 30 }).catch(() => {}); // pusat zona rock world
       p.nodes = new Map(); // reset biar murni snap shard ini
       let wn = 0; while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && wn < 10000) { await sleep(500); wn += 500; }
-      await sleep(1500);
+      await sleep(900);
       const live = p.knownNodes('rock').filter((n) => {
         const h = n.h | 0, hm = n.hm | 0;
         if (hm > 0 && h >= hm) return false;
@@ -184,7 +184,7 @@ async function scanShardsForRocks(cli, onEvent, shardList = ['s1', 's2', 's3', '
 async function exitPondToWorld(p, onEvent, tx, tz) {
   if (p.region === 'pond') {
     try { p.setRegion('world', 30.5, 0.5); } catch {}
-    let w = 0; while (p.region !== 'world' && w < 8000) { await sleep(1000); w += 1000; }
+    let w = 0; while (p.region !== 'world' && w < 8000) { await sleep(650); w += 1000; }
   }
   if (p.region === 'world') {
     await p.walkTo(tx, tz, { maxSec: 14 }).catch(() => {});
@@ -200,19 +200,19 @@ async function gotoPond(p, onEvent, maxSec = 90) {
   onEvent && onEvent('🚶 ke Pond (portal timur)...');
   if (p.region !== 'world') {
     // dari region lain: pulang dulu ke world lewat portal masing-masing
-    if (p.region === 'eldergrove') { try { await p.walkTo(0.5, -24.5, { maxSec: 25 }).catch(() => {}); p.setRegion('world', 0.5, 29.5); await sleep(3000); } catch {} }
-    if (/^wild/.test(p.region || '')) { try { p.setRegion('world', NORTH_PORTAL.x, NORTH_PORTAL.z + 1); await sleep(3000); } catch {} }
+    if (p.region === 'eldergrove') { try { await p.walkTo(0.5, -24.5, { maxSec: 25 }).catch(() => {}); p.setRegion('world', 0.5, 29.5); await sleep(1600); } catch {} }
+    if (/^wild/.test(p.region || '')) { try { p.setRegion('world', NORTH_PORTAL.x, NORTH_PORTAL.z + 1); await sleep(1600); } catch {} }
     if (p.region !== 'world') return false;
   }
   try { await p.walkTo(30.5, 0.5, { maxSec }).catch(() => {}); } catch {}
   await sleep(800);
   if (Math.abs(p.pos.x - 30.5) > 2 || Math.abs(p.pos.z - 0.5) > 2) {
-    try { p.setRegion('world', 30.5, 0.5); await sleep(2000); } catch {}
+    try { p.setRegion('world', 30.5, 0.5); await sleep(1100); } catch {}
   }
   try { p.setRegion('pond', -18.5, 0.5); } catch {}
   let w = 0;
-  while (p.region !== 'pond' && w < 20000) { await sleep(1000); w += 1000; }
-  if (p.region === 'pond') { await sleep(2000); }
+  while (p.region !== 'pond' && w < 20000) { await sleep(650); w += 1000; }
+  if (p.region === 'pond') { await sleep(1100); }
   return p.region === 'pond';
 }
 
@@ -239,13 +239,14 @@ async function runRock(ctx) {
   } else if (!(await gotoResourceZone(p, onEvent))) onEvent(`⚠️ belum di zona rock (region=${p.region}) — coba node sekitar`);
   // tunggu res_snap ngisi node (pond butuh beberapa detik)
   let waitN = 0;
-  while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && waitN < 20000) { await sleep(1000); waitN += 1000; }
+  while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && waitN < 20000) { await sleep(650); waitN += 1000; }
   // Waypoint rotasi POND — 12 titik (tambah 2 biar rotasi lebih rapat, kurangi waktu jalan kosong)
-  const POND_WP = [[8, -4], [14, 2], [10, 14], [2, 10], [-8, 12], [-14, 4], [-10, -4], [-2, -8], [6, 6], [-6, -6], [-18, -10], [18, 10]];
+  const POND_WP = [[4,-2],[8,0],[12,4],[6,8],[0,10],[-6,8],[-10,4],[-8,0],[-4,-2],[2,-4],[8,-6],[14,2]];
   let wpIdx = 0, skipStreak = 0, felledSinceMove = 0;
   const dead = new Map(); // key -> ts blacklist (node gagal/depleted)
   let stone = 0, coal = 0, metal = 0, fails = 0, skips = 0;
   while (!stop()) {
+    ctx._lastBeat = Date.now(); // heartbeat mining
     const OFF = tileOff(p.region); // offset live — region bisa berubah pas reconnect
     let tgt = pickNodeFixed(p, ['rock'], dead);
     // filter sesuai mode
@@ -273,7 +274,7 @@ async function runRock(ctx) {
           onEvent(`🔄 area habis — rotasi ke titik ${wp[0]},${wp[1]}...`);
           await p.walkTo(wp[0], wp[1], { maxSec: 20 }).catch(() => {});
           await ssleep(rnd(500, 1000)); skipStreak = 0; felledSinceMove = 0;
-          let wn = 0; while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && wn < 8000) { await sleep(1000); wn += 1000; }
+          let wn = 0; while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && wn < 8000) { await sleep(650); wn += 1000; }
           // AREA STERIL: 2x putaran waypoint penuh (24 rotasi) tanpa 1 pun felled → PINDAH ZONA otomatis
           if (emptyRotas >= POND_WP.length * 2 && felledSinceMove === 0) {
             emptyRotas = 0; sterilityCount++;
@@ -287,7 +288,7 @@ async function runRock(ctx) {
             else { // gagal masuk zona target → tetap di zona lama, coba lagi nanti
               onEvent(`⚠️ gagal pindah ke ${target} — tetap di ${zone}`);
             }
-            let wn2 = 0; while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && wn2 < 15000) { await sleep(1000); wn2 += 1000; }
+            let wn2 = 0; while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && wn2 < 15000) { await sleep(650); wn2 += 1000; }
             // DUA ZONA STERIL BERUNTUN (pond habis, world habis) → SCAN SEMUA SHARD, reconnect ke yang paling deras
             if (sterilityCount % 2 === 0 && fails >= 40 && felledSinceMove === 0) {
               onEvent('🛰️ dua zona steril — scan shard buat node rock hidup...');
@@ -302,10 +303,10 @@ async function runRock(ctx) {
                 Object.assign(p, pn);
                 dead.clear(); emptyRotas = 0; skipStreak = 0; felledSinceMove = 0;
                 if (p.region !== 'pond') { await gotoPond(p, onEvent); } // pond dulu (respawn cepat), fallback world
-                let wn3 = 0; while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && wn3 < 15000) { await sleep(1000); wn3 += 1000; }
+                let wn3 = 0; while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && wn3 < 15000) { await sleep(650); wn3 += 1000; }
                 if (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock'))) { // pond kosong di shard baru → world
                   if (await gotoResourceZone(p, onEvent)) zone = 'world';
-                  let wn4 = 0; while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && wn4 < 10000) { await sleep(1000); wn4 += 1000; }
+                  let wn4 = 0; while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && wn4 < 10000) { await sleep(650); wn4 += 1000; }
                 }
               } else {
                 // breather 90 dtk → 9x (10 dtk + cek /stop) — /stop gak perlu nunggu 90 dtk
@@ -345,7 +346,7 @@ async function runRock(ctx) {
     if (!p.ready) { onEvent('🔌 reconnect...'); try { p.close(); } catch {}
       const pn = await connectPresence(cli, onEvent); Object.assign(p, pn);
       if (zone === 'pond' && p.region !== 'pond') { await gotoPond(p, onEvent); } // masuk pond lagi pasca-reconnect
-      let wn = 0; while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && wn < 15000) { await sleep(1000); wn += 1000; } }
+      let wn = 0; while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && wn < 15000) { await sleep(650); wn += 1000; } }
   }
   try { p.close(); } catch {}
   await flushPersist();
@@ -510,7 +511,7 @@ async function retreatHeal(cli, p, pot, onEvent) {
   const sc = wildWorld(SAFE_CAMP.col, SAFE_CAMP.row);
   onEvent(`🏃 retreat ke safe camp (hp=${p.hp})...`);
   await p.walkTo(sc.x, sc.z, { maxSec: 30 });
-  await sleep(1500);
+  await sleep(900);
   for (let i = 0; i < 8 && p.hp < 80 && pot.health > 0; i++) {
     await tryPotion(cli, p, 'potion_health', pot);
     await sleep(2600);
@@ -518,7 +519,7 @@ async function retreatHeal(cli, p, pot, onEvent) {
   if (pot.health <= 0 && p.hp <= 22) {
     onEvent('🚪 potion habis & HP rendah — exit ke Mainland');
     p.setRegion('world', NORTH_PORTAL.x, NORTH_PORTAL.z + 1);
-    await sleep(3000);
+    await sleep(1600);
     return 'exited';
   }
   onEvent(`🛡️ recovered hp=${p.hp} — lanjut hunt`);
@@ -583,7 +584,7 @@ async function runCombat(ctx, opts = {}) {
   // BELI POTION DULU (bahan panen masih di backpack — usul user), baru bank sisanya
   try {
     await p.walkTo(bank.BANK_WORLD.x, bank.BANK_WORLD.z, { maxSec: 30 });
-    await sleep(1500);
+    await sleep(900);
   } catch (e) { onEvent('bank walk skip: ' + String(e.message).slice(0, 40)); }
   const pot = await ensureCombatSupplies(cli, onEvent);
   if (pot.fatal) {
@@ -621,11 +622,11 @@ async function runCombat(ctx, opts = {}) {
   onEvent('⚔️ walk ke north portal...');
   p.equip('wild_sword');
   await p.walkTo(NORTH_PORTAL.x, NORTH_PORTAL.z, { until: () => /^wild/.test(p.region), maxSec: 40 });
-  await sleep(1500);
+  await sleep(900);
   if (!/^wild/.test(p.region)) {
     const sp = wildWorld(25, 48);
     p.setRegion('wild', sp.x, sp.z);
-    await sleep(3000);
+    await sleep(1600);
   }
   if (!/^wild/.test(p.region)) { onEvent('🛑 gagal masuk wild'); try { p.close(); } catch {} return { kills: 0, err: 'no-wild' }; }
   p.sendWildManifest([]);
@@ -643,7 +644,7 @@ async function runCombat(ctx, opts = {}) {
     }
     // tunggu mob
     for (let w = 0; w < 15 && !p.wildMobs.some((m) => m.alive && (dragon ? m.d === 1 : true)); w++) {
-      await sleep(2000);
+      await sleep(1100);
       ctx._lastBeat = Date.now(); // heartbeat saat tunggu mob — watchdog gak boleh bunuh fase ini
       if (w === 5) p.sendWildManifest([]);
     }
@@ -653,11 +654,11 @@ async function runCombat(ctx, opts = {}) {
       ctx._lastBeat = Date.now(); // heartbeat saat gak ada mob — loop masih hidup
       if (noMob % 5 === 0) onEvent('⏳ nunggu mob respawn...');
       // di luar wild & gak ada mob (mis. habis reconnect/mati) — jangan nunggu selamanya, masuk lagi
-      if (noMob >= 3 && !/^wild/.test(p.region)) {
+      if (noMob >= 2 && !/^wild/.test(p.region)) {
         onEvent('🔄 di luar wild tanpa mob — masuk wild lagi');
         p.wildMobs = [];
         await p.walkTo(NORTH_PORTAL.x, NORTH_PORTAL.z, { until: () => /^wild/.test(p.region), maxSec: 30 }).catch(() => {});
-        if (!/^wild/.test(p.region)) { const sp = wildWorld(25, 48); p.setRegion('wild', sp.x, sp.z); await sleep(3000); }
+        if (!/^wild/.test(p.region)) { const sp = wildWorld(25, 48); p.setRegion('wild', sp.x, sp.z); await sleep(1600); }
         p.sendWildManifest([]);
         noMob = 0;
       }
@@ -696,7 +697,7 @@ async function runCombat(ctx, opts = {}) {
         if (!/^wild/.test(p.region)) {
           const sp = wildWorld(25, 48);
           p.setRegion('wild', sp.x, sp.z);
-          await sleep(3000);
+          await sleep(1600);
         }
         p.sendWildManifest([]);
       } catch (e) { onEvent('⚠️ pasca-mati err: ' + String(e.message).slice(0, 60)); }
@@ -721,7 +722,7 @@ async function runCombat(ctx, opts = {}) {
       if (!/^wild/.test(p.region)) {
         const sp = wildWorld(25, 48);
         p.setRegion('wild', sp.x, sp.z);
-        await sleep(3000);
+        await sleep(1600);
       }
       p.sendWildManifest([]);
       continue;
@@ -767,7 +768,7 @@ async function runCombat(ctx, opts = {}) {
     }
     await ssleep(600);
   }
-  try { if (/^wild/.test(p.region)) { p.setRegion('world', NORTH_PORTAL.x, NORTH_PORTAL.z + 1); await sleep(2000); } } catch {}
+  try { if (/^wild/.test(p.region)) { p.setRegion('world', NORTH_PORTAL.x, NORTH_PORTAL.z + 1); await sleep(1100); } } catch {}
   try { p.close(); } catch {}
   return { kills: ctx.get('kill') || 0, deaths, retreats };
 }
@@ -877,8 +878,8 @@ async function doFishQuest(ctx, quest) {
     if (p.region !== 'pond') {
       onEvent('🎣 walk ke Pond...');
       await p.walkTo(PORTAL.x, PORTAL.z, { until: () => p.region === 'pond', maxSec: 30 });
-      await sleep(1500);
-      if (p.region !== 'pond') { p.setRegion('pond', PORTAL.x, PORTAL.z); await sleep(3000); }
+      await sleep(900);
+      if (p.region !== 'pond') { p.setRegion('pond', PORTAL.x, PORTAL.z); await sleep(1600); }
       if (p.region === 'pond') { p.pos.x = -18.5; p.pos.z = 0; await p.walkTo(FISH_SPOT.x, FISH_SPOT.z, { maxSec: 12 }); }
     }
     let casts = 0, ok = 0;
@@ -891,7 +892,7 @@ async function doFishQuest(ctx, quest) {
         const pr = (q?.dailyQuest?.prog || {})[quest.id] || 0;
         if (qq && pr >= qq.target) { onEvent(`✅ quest fish selesai (${pr}/${qq.target})`); (ctx.onImportant || (() => {}))(questPanel('QUEST SELESAI', [['🎣 fish', `${pr}/${qq.target} ✅`]], '✅')); break; }
       }
-      if (p.region !== 'pond') { onEvent('🔌 keluar pond — reconnect'); try { p.close(); } catch {} p = await connectPresence(cli, onEvent); p.setRegion('pond', -11.5, 0); await sleep(3000); continue; }
+      if (p.region !== 'pond') { onEvent('🔌 keluar pond — reconnect'); try { p.close(); } catch {} p = await connectPresence(cli, onEvent); p.setRegion('pond', -11.5, 0); await sleep(1600); continue; }
       // cari spot aktif terdekat (server-driven, bukan tile statis)
       let spot = p.nearestFishSpot ? p.nearestFishSpot(p.pondTile().col, p.pondTile().row, 6) : null;
       if (!spot) {
@@ -950,7 +951,7 @@ async function doFishQuest(ctx, quest) {
         if (!(await gotoPond(p, onEvent))) onEvent('⚠️ gagal balik pond (quest)');
         if (p.region === 'pond') {
           try { p.equip('tool_fishing_rod'); } catch {}
-          await sleep(1500);
+          await sleep(900);
           await p.walkTo(FISH_SPOT.x, FISH_SPOT.z, { maxSec: 12 }).catch(() => {});
         }
       }
@@ -1038,7 +1039,7 @@ async function runTutorial(ctx) {
     } else {
       refused++; onEvent(`⚠️ advance ditolak (step ${step}) — coba lagi`);
       if (refused > 3) break;
-      await sleep(3000);
+      await sleep(1600);
     }
   }
   // step terakhir: finish
@@ -1071,7 +1072,7 @@ async function huntChickens(p, cli, onEvent, want = 5, budgetMs = 120000, stop =
     for (let i = 0; i < 15 && p.region !== 'eldergrove'; i++) await ssleep(1000);
     if (p.region !== 'eldergrove') { onEvent('⚠️ gagal masuk Whisperwood'); return 0; }
     onEvent('🌲 masuk Whisperwood ✓');
-    let w = 0; while (!p.chickens && w < 8000) { await sleep(1000); w += 1000; } // tunggu snap bawa ambientChickens
+    let w = 0; while (!p.chickens && w < 8000) { await sleep(650); w += 1000; } // tunggu snap bawa ambientChickens
   }
   try { p.equip('wild_sword'); } catch {}
   let killWait = new Promise((resolve) => {
@@ -1093,14 +1094,14 @@ async function huntChickens(p, cli, onEvent, want = 5, budgetMs = 120000, stop =
   try {
     while (feathers < want && Date.now() - t0 < budgetMs && !(stop && stop())) {
       const ch = (p.chickens || []).filter((c) => c.alive && c.x != null);
-      if (!ch.length) { await sleep(2000); continue; }
+      if (!ch.length) { await sleep(1100); continue; }
       // chicken terdekat
       let best = null, bd = Infinity;
       for (const c of ch) {
         const d = Math.abs(c.x - p.pos.x) + Math.abs(c.z - p.pos.z);
         if (d < bd) { bd = d; best = c; }
       }
-      if (!best) { await sleep(2000); continue; }
+      if (!best) { await sleep(1100); continue; }
       // dekati chicken (jalan sampai jarak < 2)
       if (bd > 2.5) {
         try { await p.walkTo(best.x, best.z, { maxSec: Math.min(20, 2 + bd / 3) }); } catch {}
@@ -1126,7 +1127,7 @@ async function huntChickens(p, cli, onEvent, want = 5, budgetMs = 120000, stop =
   if (p.region === 'eldergrove') {
     try { await p.walkTo(0.5, -24.5, { maxSec: 30 }); } catch {}
     p.setRegion('world', 0.5, 29.5);
-    let w = 0; while (p.region !== 'world' && w < 8000) { await sleep(1000); w += 1000; }
+    let w = 0; while (p.region !== 'world' && w < 8000) { await sleep(650); w += 1000; }
   }
   return feathers;
 }
@@ -1152,7 +1153,7 @@ async function ensureBait(cli, p, onEvent, target = 40, stop = null) {
   onEvent(`🪶 bait kurang (${bait}/${target}) — farm ${need} chicken (batch besar)...`);
   const got = await huntChickens(p, cli, onEvent, need, 600000, stop ? () => stop() : null);
   if (got > 0) {
-    await sleep(1500);
+    await sleep(900);
     for (let i = 0; i < got; i++) {
       try { const r = await cli.fishingExchange('bait_feather'); if (r?.ok !== false) bait++; } catch { break; }
     }
@@ -1195,7 +1196,7 @@ async function cookBatchAtRoast(ctx, p, count) {
   if (/pond|wild/i.test(p.region || '')) {
     onEvent('🚶 keluar region -> ROAST (world)...');
     if (p.region === 'pond') await exitPondToWorld(p, onEvent, ROAST.x, ROAST.z);
-    else { try { p.setRegion('world', 0.5, 29.5); } catch {} await sleep(2000); await p.walkTo(ROAST.x, ROAST.z, { maxSec: 14 }).catch(() => {}); }
+    else { try { p.setRegion('world', 0.5, 29.5); } catch {} await sleep(1100); await p.walkTo(ROAST.x, ROAST.z, { maxSec: 14 }).catch(() => {}); }
   } else {
     await p.walkTo(ROAST.x, ROAST.z, { maxSec: 14 }).catch(() => {});
   }
@@ -1268,15 +1269,15 @@ async function runFish(ctx) {
         try { await p.walkTo(30.5, 0.5, { maxSec: 60 }); } catch {}
         if (Math.abs(p.pos.x - 30.5) < 1.5 && Math.abs(p.pos.z - 0.5) < 1.5) {
           p.setRegion('pond', -18.5, 0.5);
-          let w = 0; while (p.region !== 'pond' && w < 10000) { await sleep(1000); w += 1000; }
+          let w = 0; while (p.region !== 'pond' && w < 10000) { await sleep(650); w += 1000; }
         }
         if (p.region === 'pond') {
           p.pos.x = -18.5; p.pos.z = 0;
           try { p.equip('tool_fishing_rod'); } catch {} // WAJIB: server push fish_spots cuma kalau rod equipped (tool_fishing_rod!)
-          await sleep(2000);
+          await sleep(1100);
           await p.walkTo(FISH_SPOT.x, FISH_SPOT.z, { maxSec: 12 }).catch(() => {});
         }
-        if (p.region !== 'pond') { await sleep(3000); continue; }
+        if (p.region !== 'pond') { await sleep(1600); continue; }
       }
       // tunggu fish_spots dari hub (datang setelah equip rod)
       let spot = null;
@@ -1377,7 +1378,7 @@ async function runFish(ctx) {
         }
         else if (/fish_spot_required/.test(m)) onEvent('💨 spot pindah — cari spot baru');
         else onEvent('cast err: ' + m.slice(0, 40));
-        await sleep(2000);
+        await sleep(1100);
       }
       // masak tiap 8 ikan — pakai counter fishN (respons grantFishXp; buang cli.me() per cast)
       if (fishN >= 8) {
@@ -1389,7 +1390,7 @@ async function runFish(ctx) {
         if (!(await gotoPond(p, onEvent))) onEvent('⚠️ gagal balik pond — coba loop berikutnya');
         if (p.region === 'pond') {
           try { p.equip('tool_fishing_rod'); } catch {}
-          await sleep(1500);
+          await sleep(900);
           await p.walkTo(FISH_SPOT.x, FISH_SPOT.z, { maxSec: 12 }).catch(() => {});
         }
       }
