@@ -364,11 +364,31 @@ async function runWood(ctx) {
   const dead = new Map(); // key -> ts blacklist
   let wood = 0, fails = 0;
   const targetWood = ctx.targetWood || 0; // refill potion: auto-berhenti saat bahan cukup (jgn jalan selamanya)
+  // ROTASI CLUSTER TREE (world col 3-8 row 19-26): cegah silent-spin 0-log saat cluster steril nunggu respawn
+  const TREE_WP = [[4, 20], [7, 20], [8, 23], [6, 25], [3, 25], [5, 22]];
+  let wpIdx = 0, emptyRotas = 0, lastEmptyLog = 0;
+  const hb = ctx.parent || ctx; // refill manual bikin sub-ctx — heartbeat harus balik ke ctx asli (watchdog)
   while (!stop() && !(targetWood && wood >= targetWood)) {
+    hb._lastBeat = Date.now(); // heartbeat: loop hidup meski cluster kosong — watchdog jangan bunuh
     const tgt = pickNodeFixed(p, ['tree'], dead);
     if (!tgt) {
-      if (dead.size) { dead.clear(); onEvent('♻️ blacklist reset — cari node respawn'); }
-      await ssleep(rnd(800, 1500)); continue;
+      const known = p.knownNodes('tree').length;
+      if (Date.now() - lastEmptyLog > 60000) { lastEmptyLog = Date.now(); onEvent(`⏳ 0 node tree bisa dipanen (${known} terlihat — respawn/rotasi)...`); }
+      emptyRotas++;
+      if (emptyRotas >= 8) { // kosong beruntun → geser waypoint cluster tree
+        emptyRotas = 0;
+        if (p.region !== 'world') { await gotoResourceZone(p, onEvent, 60, 'tree'); continue; }
+        const wp = TREE_WP[wpIdx % TREE_WP.length]; wpIdx++;
+        onEvent(`🔄 cluster tree kosong — geser ke ${wp[0]},${wp[1]}...`);
+        const off = tileOff(p.region);
+        await p.walkTo(wp[0] + off, wp[1] + off, { maxSec: 20 }).catch(() => {});
+        await ssleep(900);
+        let wn = 0; while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'tree')) && wn < 8000) { await sleep(650); wn += 1000; }
+        if (dead.size) dead.clear();
+      } else {
+        await ssleep(rnd(1500, 2500));
+      }
+      continue;
     }
     const [C, R] = tgt.key.split(',').map(Number);
     const dstx = C - 30.5, dstz = R + 1 - 30.5;
@@ -537,7 +557,7 @@ async function refillPotionsManual(ctx, p, pot, onEvent) {
     const targetWood = needH * 60 + 60; // buffer +60
     onEvent(`🪓 MANUAL tanpa batas: bahan potion habis — panen wood target ${targetWood} (usaha ${attempt}/3)...`);
     try { p.close(); } catch {} // 1 akun 1 sesi presence — runWood buka sendiri
-    const sub = { cli, stop: ctx.stop, onEvent, counters: ctx.counters, bump: (k) => ctx.bump(k), get: (k) => ctx.get(k), onImportant: ctx.onImportant, manual: true, targetWood };
+    const sub = { cli, stop: ctx.stop, onEvent, counters: ctx.counters, bump: (k) => ctx.bump(k), get: (k) => ctx.get(k), onImportant: ctx.onImportant, manual: true, targetWood, parent: ctx }; // parent: heartbeat runWood balik ke ctx asli (watchdog)
     try { await runWood(sub); } catch (e) { onEvent('⚠️ panen wood err: ' + String(e.message).slice(0, 60)); }
     const r2 = await ensureCombatSupplies(cli, onEvent).catch(() => ({ health: 0, shield: 0, fatal: true }));
     pot.health = r2.health; pot.shield = r2.shield;
