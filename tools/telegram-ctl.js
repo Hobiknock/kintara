@@ -108,7 +108,7 @@ async function startActivity(name, fn, opts = {}) {
   (async () => {
     try {
       const c = await getClient();
-      const res = await fn({ ...ctx, cli: c });
+      const res = await fn(Object.assign(ctx, { cli: c })); // SATU ctx yg sama — jangan salinan, kalau diem _lastBeat gak keliatan watchdog
       const dur = Math.round((Date.now() - current.startedAt) / 60000);
       const sum = fmtSummary(name, res, ctx.counters);
       // spinner: hasil spin (grant) langsung jadi row panel — bukan '—'
@@ -216,7 +216,7 @@ function startAuto() {
       let res;
       try {
         const c = await getClient();
-        res = await AUTO_FNS[name]({ ...ctx, cli: c });
+        res = await AUTO_FNS[name](Object.assign(ctx, { cli: c })); // ctx asli, bukan salinan (heartbeat watchdog)
         // fase gagal krn kekurangan bahan (no-potions/no-wild) → skip & lanjut fase berikutnya
         if (res && (res.err === 'no-potions' || res.err === 'no-wild')) {
           if (auto) await tg.send(`⏭️ ${activityLabel(name)} dilewati (${res.err}) — lanjut fase berikutnya`).catch(() => {});

@@ -733,13 +733,28 @@ async function runCombat(ctx, opts = {}) {
     for (const m of pool) {
       if (m.col == null) continue;
       const d = Math.max(Math.abs(m.col - me.col), Math.abs(m.row - me.row));
-      if (d > 10) continue; // terlalu jauh — skip, tunggu respawn
+      if (d > 40) continue; // batas longgar: mob sering spawn di POJOK wild (d 20-40) — cap lama 10 bikin silent spin 0 kill
       let nbrs = 0; // zombie lain radius 2 dari target — bakal ikut nyerang kita
       for (const o of pool) if (o !== m && o.col != null && Math.max(Math.abs(o.col - m.col), Math.abs(o.row - m.row)) <= 2) nbrs++;
       const score = d + nbrs * 5; // prioritas: dekat + sepi
       if (score < bScore) { bScore = score; bd = d; target = m; }
     }
-    if (!target) { await ssleep(2000); continue; }
+    if (!target) {
+      // silent-spin guard: mob ada tapi semua di luar radius — JANGAN diem, log + beat
+      ctx._lastBeat = Date.now();
+      if (!ctx._farLogAt || Date.now() - ctx._farLogAt > 60000) { ctx._farLogAt = Date.now(); onEvent(`⏳ ${pool.length} mob hidup tapi jauh (min ${bd === Infinity ? '?' : bd} tile) — jalan dekatin`); }
+      // jalan ke mob terdekat, jangan diem di tempat (loop bawah bakal mukul begitu dalam jarak)
+      const near = pool.reduce((a, b2) => {
+        const da = a.col == null ? Infinity : Math.max(Math.abs(a.col - me.col), Math.abs(a.row - me.row));
+        const db = b2.col == null ? Infinity : Math.max(Math.abs(b2.col - me.col), Math.abs(b2.row - me.row));
+        return db < da ? b2 : a;
+      }, pool[0]);
+      if (near && near.col != null) {
+        const dest = wildWorld(near.col, near.row + 1);
+        await p.walkTo(dest.x, dest.z, { maxSec: 20, until: () => p.hp <= 22 || stop() || !/^wild/.test(p.region) }).catch(() => {});
+      }
+      await ssleep(1000); continue;
+    }
     if (bd > 1) {
       const dest = wildWorld(target.col, target.row + 1);
       await p.walkTo(dest.x, dest.z, { maxSec: 18, until: () => p.hp <= 22 });
