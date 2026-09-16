@@ -356,42 +356,70 @@ async function runRock(ctx) {
 // ============ /wood — panen wood ============
 async function runWood(ctx) {
   const { cli, stop, onEvent } = ctx;
-  onEvent('🪓 Mulai panen wood...');
+  // zone: 'pond' (DEFAULT — di pond banyak wood, respawn deras, pola runRock terbukti) | 'world' (cluster tree lama)
+  let zone = ctx.zone || 'pond';
+  onEvent(`🪓 Mulai panen wood${zone === 'pond' ? ' di POND 🎣' : ''}...`);
   const p = await connectPresence(cli, onEvent);
   watchLevelUps(p, ctx); // notif LEVEL UP ke chat
   try { p.equip('tool_axe'); } catch {} // human-like: bawa axe pas chopping
-  if (!(await gotoResourceZone(p, onEvent, 90, 'tree'))) onEvent(`⚠️ belum di zona tree (region=${p.region}) — coba node sekitar`);
   const dead = new Map(); // key -> ts blacklist
   let wood = 0, fails = 0;
   const targetWood = ctx.targetWood || 0; // refill potion: auto-berhenti saat bahan cukup (jgn jalan selamanya)
-  // ROTASI CLUSTER TREE (world col 3-8 row 19-26): cegah silent-spin 0-log saat cluster steril nunggu respawn
+  // Waypoint rotasi: POND = world-coord (persis runRock) | WORLD = tile cluster tree (col 3-8 row 19-26)
+  const POND_WP = [[4,-2],[8,0],[12,4],[6,8],[0,10],[-6,8],[-10,4],[-8,0],[-4,-2],[2,-4],[8,-6],[14,2]];
   const TREE_WP = [[4, 20], [7, 20], [8, 23], [6, 25], [3, 25], [5, 22]];
-  let wpIdx = 0, emptyRotas = 0, lastEmptyLog = 0;
+  let wpIdx = 0, emptyTicks = 0, lastEmptyLog = 0, felledSinceMove = 0;
   const hb = ctx.parent || ctx; // refill manual bikin sub-ctx — heartbeat harus balik ke ctx asli (watchdog)
+  const waitNodes = async (ms) => { let w = 0; while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'tree')) && w < ms) { await sleep(650); w += 1000; } };
+  const gotoZone = async () => {
+    if (zone === 'pond') {
+      if (p.region !== 'world' && p.region !== 'pond') await gotoResourceZone(p, onEvent, 60, 'rock'); // dari wild/eldergrove: pulang dulu
+      if (!(await gotoPond(p, onEvent))) {
+        onEvent('⚠️ gagal masuk pond — fallback cluster tree WORLD');
+        zone = 'world';
+        await gotoResourceZone(p, onEvent, 90, 'tree');
+      }
+    } else if (!(await gotoResourceZone(p, onEvent, 90, 'tree'))) onEvent(`⚠️ belum di zona tree (region=${p.region}) — coba node sekitar`);
+    await waitNodes(12000); // tunggu res_snap ngisi node
+  };
+  await gotoZone();
   while (!stop() && !(targetWood && wood >= targetWood)) {
-    hb._lastBeat = Date.now(); // heartbeat: loop hidup meski cluster kosong — watchdog jangan bunuh
+    hb._lastBeat = Date.now(); // heartbeat: loop hidup meski area kosong — watchdog jangan bunuh
+    const OFF = tileOff(p.region); // offset live — region bisa berubah pas reconnect (pond -19.5 | world -30.5)
     const tgt = pickNodeFixed(p, ['tree'], dead);
     if (!tgt) {
       const known = p.knownNodes('tree').length;
-      if (Date.now() - lastEmptyLog > 60000) { lastEmptyLog = Date.now(); onEvent(`⏳ 0 node tree bisa dipanen (${known} terlihat — respawn/rotasi)...`); }
-      emptyRotas++;
-      if (emptyRotas >= 8) { // kosong beruntun → geser waypoint cluster tree
-        emptyRotas = 0;
-        if (p.region !== 'world') { await gotoResourceZone(p, onEvent, 60, 'tree'); continue; }
-        const wp = TREE_WP[wpIdx % TREE_WP.length]; wpIdx++;
-        onEvent(`🔄 cluster tree kosong — geser ke ${wp[0]},${wp[1]}...`);
-        const off = tileOff(p.region);
-        await p.walkTo(wp[0] + off, wp[1] + off, { maxSec: 20 }).catch(() => {});
+      if (Date.now() - lastEmptyLog > 60000) { lastEmptyLog = Date.now(); onEvent(`⏳ 0 node tree di ${zone === 'pond' ? 'POND' : 'world'} (${known} terlihat — respawn/rotasi)...`); }
+      await ssleep(rnd(1200, 2000));
+      emptyTicks++;
+      const WP = zone === 'pond' ? POND_WP : TREE_WP;
+      // STERIL: >1 putaran waypoint penuh tanpa 1 pun felled → PINDAH ZONA (pond ↔ world)
+      if (emptyTicks >= (WP.length + 1) * 8 && felledSinceMove === 0) {
+        emptyTicks = 0; dead.clear(); felledSinceMove = 0;
+        const target = zone === 'pond' ? 'world' : 'pond';
+        onEvent(`🧭 area ${zone === 'pond' ? 'POND' : 'cluster tree WORLD'} steril — pindah ke ${target === 'pond' ? 'POND 🎣' : 'cluster tree WORLD'}...`);
+        zone = target;
+        await gotoZone();
+        continue;
+      }
+      if (emptyTicks % 8 === 0) { // tiap 8 tick kosong → geser waypoint
+        felledSinceMove = 0;
+        if (zone === 'pond' && p.region !== 'pond') { await gotoPond(p, onEvent); await waitNodes(8000); continue; }
+        if (zone === 'world' && p.region !== 'world') { await gotoResourceZone(p, onEvent, 60, 'tree'); await waitNodes(8000); continue; }
+        const wp = WP[wpIdx % WP.length]; wpIdx++;
+        onEvent(`🔄 area ${zone === 'pond' ? 'pond' : 'cluster tree'} kosong — geser ke ${wp[0]},${wp[1]}...`);
+        if (zone === 'pond') await p.walkTo(wp[0], wp[1], { maxSec: 20 }).catch(() => {}); // POND_WP world-coord (pola runRock)
+        else { const off = tileOff(p.region); await p.walkTo(wp[0] + off, wp[1] + off, { maxSec: 20 }).catch(() => {}); }
         await ssleep(900);
-        let wn = 0; while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'tree')) && wn < 8000) { await sleep(650); wn += 1000; }
-        if (dead.size) dead.clear();
-      } else {
-        await ssleep(rnd(1500, 2500));
+        await waitNodes(8000);
+        if (dead.size) dead.clear(); // blacklist gak boleh ikut ke titik baru
       }
       continue;
     }
+    emptyTicks = 0; // node ketemu → area ada isi, reset siklus rotasi
+    // jalan ke samping node (jarak pendek — pickNodeFixed pilih terdekat)
     const [C, R] = tgt.key.split(',').map(Number);
-    const dstx = C - 30.5, dstz = R + 1 - 30.5;
+    const dstx = C + OFF, dstz = (R + 1) + OFF;
     if (Math.abs(p.pos.x - dstx) > 0.6 || Math.abs(p.pos.z - dstz) > 0.6) {
       await p.walkTo(dstx, dstz, { maxSec: Math.min(12, 2 + Math.hypot(p.pos.x - dstx, p.pos.z - dstz) / 2) }).catch(() => {});
     }
@@ -401,16 +429,19 @@ async function runWood(ctx) {
       persistLootAsync(cli, 'wood', y);
       wood += y;
       ctx.bump('felled'); ctx.bump('wood');
+      felledSinceMove++;
       onEvent(`✅ tree felled (wood+${wood})`);
       dead.set(tgt.key, Date.now());
       await ssleep(rnd(200, 600)); // dipangkas
     } else {
-      fails++; dead.set(tgt.key, Date.now());
+      fails++; dead.set(tgt.key, Date.now() + (p.region === 'pond' ? 150000 : 0)); // pond: blacklist 2.5 mnt (pola runRock)
       if (fails % 10 === 1) onEvent(`⚠️ ${fails} node skip (gagal/depleted)`);
     }
     if (!p.ready) { onEvent('🔌 reconnect...');
       try { p.close(); } catch {}
-      const pn = await connectPresence(cli, onEvent); Object.assign(p, pn); }
+      const pn = await connectPresence(cli, onEvent); Object.assign(p, pn);
+      if (zone === 'pond' && p.region !== 'pond') { await gotoPond(p, onEvent); await waitNodes(12000); } // masuk pond lagi pasca-reconnect
+    }
   }
   if (targetWood && wood >= targetWood) onEvent(`🎯 wood ${wood}/${targetWood} — cukup buat potion, selesai panen`);
   try { p.close(); } catch {}
