@@ -71,11 +71,22 @@ function watchLevelUps(p, ctx) {
   if (!ctx || !ctx.onImportant) return;
   const { levelFromTotalXp } = require('../lib/skillXp');
   const last = {};
+  const SKILL_KEY = { combat: 'combat', woodcutting: 'woodcutting', mining: 'mining', fishing: 'fishing', cooking: 'cooking' };
+  const checkCap = (skill, lv) => {
+    // capLevel: batas level per sesi (mis. 5) — stop loop saat skill terkait nyentuh batas
+    if (ctx.capLevel != null && SKILL_KEY[skill] && lv >= ctx.capLevel) {
+      ctx.onImportant(`🎯 ${skill} capai lvl ${ctx.capLevel} — sesi dihentikan`);
+      try { ctx.stop(); } catch {}
+    }
+  };
   p.on('skill_xp', (xp) => {
     try {
       for (const [skill, total] of Object.entries(xp || {})) {
         const lv = levelFromTotalXp(total);
-        if (last[skill] != null && lv > last[skill]) ctx.onImportant(questPanel('LEVEL UP!', [['📈 ' + skill, 'lvl ' + lv + ' 🆙']], '🎉'));
+        if (last[skill] != null && lv > last[skill]) {
+          ctx.onImportant(questPanel('LEVEL UP!', [['📈 ' + skill, 'lvl ' + lv + ' 🆙']], '🎉'));
+          checkCap(skill, lv);
+        }
         last[skill] = lv;
       }
     } catch {}
@@ -1256,9 +1267,10 @@ function waitForBite(p, timeoutMs = 20000, stop = null) {
 
 
 // ============ cook-at-roast helper (dipakai runFish & runCook & doFishQuest) ============
-// Masak HARUS di dekat ROAST fire region WORLD (-14.5,-12.5).
-// FIX UTAMA: keluar pond = setRegion('world', 30.5, 0.5) LANGSUNG (pola gotoPond dibalik).
-// walkTo koordinat world dari dalam pond = nyasar (koordinat beda region) -> masak gagal total.
+// UPDATE SERVER 18 Sep: roast pit PINDAH ke POND — tile footprints ["5,6","6,6","5,7","6,7"] & ["18,34","19,34","18,35","19,35"]
+// (dari client resmi: POND_ROAST_PIT_TILE_SETS, pond offset 19.5). Harus berdiri CARDINAL-ADJACENT ke footprint.
+// Presence WAJIB pakai connectToken dari queue_ready (?kt=) + masuk pond lewat PORTAL (anti-teleport) — fixed di presenceWs.js & gotoPond.
+const POND_ROAST_SPOTS = [[-15.5, -13.5], [-13.5, -13.5], [-15.5, -11.5], [-13.5, -11.5], [-14.5, -14.5], [-14.5, -12.5]];
 async function cookBatchAtRoast(ctx, p, count) {
   const { cli, stop, onEvent } = ctx;
   let cooked = 0, fails = 0;
@@ -1276,15 +1288,23 @@ async function cookBatchAtRoast(ctx, p, count) {
       p = await connectPresence(cli, onEvent); // sesi presence baru buat masak
     }
   } catch (e) { onEvent('⚠️ cek wood err: ' + String(e.message).slice(0, 50)); }
-  // 1) ke world dulu (kalau di pond/wild), lalu jalan ke ROAST
-  if (/pond|wild/i.test(p.region || '')) {
-    onEvent('🚶 keluar region -> ROAST (world)...');
-    if (p.region === 'pond') await exitPondToWorld(p, onEvent, ROAST.x, ROAST.z);
-    else { try { p.setRegion('world', 0.5, 29.5); } catch {} await sleep(1100); await p.walkTo(ROAST.x, ROAST.z, { maxSec: 14 }).catch(() => {}); }
-  } else {
-    await p.walkTo(ROAST.x, ROAST.z, { maxSec: 14 }).catch(() => {});
+  // 1) pastikan di POND (roast pit pond), lalu jalan ke spot adjacent pit
+  if (p.region !== 'pond') {
+    onEvent('🚶 ke roast pit (pond — via portal)...');
+    if (!await gotoPond(p, onEvent)) { onEvent('⚠️ gagal masuk pond — cook dibatalkan ronde ini'); return 0; }
   }
-  await ssleep(1200);
+  let best = null, bestD = 1e9;
+  for (const [sx, sz] of POND_ROAST_SPOTS) {
+    const d = Math.hypot(sx - p.pos.x, sz - p.pos.z);
+    if (d < bestD) { bestD = d; best = [sx, sz]; }
+  }
+  if (best && bestD > 0.5) {
+    onEvent(`🚶 jalan ke roast pit pond (${best[0]},${best[1]}) d=${bestD.toFixed(1)}`);
+    await p.walkTo(best[0], best[1], { maxSec: 45 }).catch(() => {});
+  }
+  try { p.setAct && p.setAct(null); } catch {}
+  try { p._sendPos && p._sendPos(true); } catch {}
+  await ssleep(800);
   // 2) masak loop (4.5 dtk/ikan — timer server, JANGAN diubah)
   while (!stop() && cooked < count) {
     try {
@@ -1293,9 +1313,10 @@ async function cookBatchAtRoast(ctx, p, count) {
       else fails++;
     } catch { fails++; }
     if (fails > 4) {
-      onEvent(`⚠️ masak gagal ${fails}x — reset pos ke ROAST & retry...`);
-      // pos mungkin nyasar: walk ulang ke ROAST + re-equip rod pasca region jump
-      await p.walkTo(ROAST.x, ROAST.z, { maxSec: 14 }).catch(() => {});
+      onEvent(`⚠️ masak gagal ${fails}x — reset pos ke roast pit & retry...`);
+      if (p.region !== 'pond') { if (!await gotoPond(p, onEvent)) { onEvent('⚠️ gagal balik ke pond — cook stop'); return cooked; } }
+      const [rx, rz] = POND_ROAST_SPOTS[(fails / 5 | 0) % POND_ROAST_SPOTS.length];
+      await p.walkTo(rx, rz, { maxSec: 30 }).catch(() => {});
       await ssleep(1200); fails = 0;
     }
     if (cooked % 4 === 0 || cooked === count) onEvent(`🍳 masak ${cooked}/${count}`);
