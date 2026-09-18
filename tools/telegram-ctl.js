@@ -500,7 +500,7 @@ async function hDiag() {
 function hHelp() {
   return `🤖 <b>Kintara Bot — Commands</b>\n` +
     `/status — bot status &amp; inventory\n/skills — skill levels, XP, avg level\n/balance — gold/$KINS/resources\n/market — marketplace prices\n/server — live server queues\n/version — current game version\n/quest — daily quests (auto-claim)\n/spinner — 🎡 free spin wheel (12h)\n/diag — auth, shard, process\n\n` +
-    `/rock — mining stone+coal ⛏ (di POND — node rapat, rate 3x world)\n/stone — mining khusus stone 🪨\n/coal — mining khusus coal ⬛\n/wood — woodcutting 🪓\n/fish — fishing 🎣 + auto-masak jadi cooked 🍳 (1 flow)\n/combat — hunt zombie ⚔️ (/combat boss = dragon 🐉)\n/auto — automatic orchestrator (smart switching) 🧠\n/stop — stop all\n/help — command list\n\n` +
+    `/rock — mining stone+coal ⛏ (di POND — node rapat, rate 3x world)\n/stone — mining khusus stone 🪨\n/coal — mining khusus coal ⬛\n/wood — woodcutting 🪓\n/fish — fishing 🎣 + auto-masak jadi cooked 🍳 (1 flow)\n/cook (alias /cooking) — masak semua ikan mentah doang 🍳\n/combat — hunt zombie ⚔️ (/combat boss = dragon 🐉)\n/auto — automatic orchestrator (smart switching) 🧠\n/stop — stop all\n/help — command list\n\n` +
     `<i>1 akun = 1 aktivitas (aman dari anti-cheat). Combat pakai bank-first + auto-survival.</i>`;
 }
 
@@ -510,7 +510,8 @@ const commands = {
   rock: () => startActivity('rock', (ctx) => loops.runRock(ctx)),
   stone: () => startActivity('stone', (ctx) => loops.runRock(ctx), { mode: 'stone' }),
   coal: () => startActivity('coal', (ctx) => loops.runRock(ctx), { mode: 'coal' }),
-  cook: () => startActivity('fish', (ctx) => loops.runFish(ctx)), // merge: cook = fish (mancing+masak 1 flow)
+  cook: () => startActivity('cook', (ctx) => loops.runCook(ctx)), // masak semua ikan mentah doang
+  cooking: () => startActivity('cook', (ctx) => loops.runCook(ctx)), // alias /cooking
   wood: () => startActivity('wood', (ctx) => loops.runWood(ctx)),
   combat: (args) => {
     const boss = ['boss', 'dragon', 'b'].includes(String(args[0] || '').toLowerCase());
@@ -552,6 +553,7 @@ const commands = {
     { command: 'stone', description: '🪨 Mining khusus stone' },
     { command: 'coal', description: '⬛ Mining khusus coal' },
     { command: 'cook', description: '🍳 Masak ikan mentah jadi cooked' },
+    { command: 'cooking', description: '🍳 Masak ikan mentah (alias /cook)' },
     { command: 'wood', description: '🪓 Woodcutting' },
     { command: 'combat', description: '⚔️ Hunt zombie (/combat boss 🐉 = dragon)' },
     { command: 'fish', description: '🎣 Fishing + cooking' },
