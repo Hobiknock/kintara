@@ -59,8 +59,33 @@ nano ~/kintara-bot/.env
 Lalu start:
 
 ```bash
-~/kintara-bot/start.sh
+node ~/kintara-bot/kintara.js
 ```
+
+> ⚡ **Lebih simpel:** `node kintara.js` (tanpa argumen) langsung jalanin bot.
+> Kalau `.env` belum ada, dia **otomatis bikin dari template** dan kasih tahu:
+> `nano .env` → isi 2 baris → `node kintara.js` lagi. Gak perlu cp/copy apa-apa.
+
+### 🧩 Multi-akun (beberapa akun, beberapa bot token, 1 VPS)
+
+Buat `accounts.json` (copy dari `accounts.example.json`), 1 entry per akun:
+
+```json
+[
+  { "name": "akun1", "wallet": "PK_AKUN1", "bot_token": "TOKEN_BOT1", "chat_id": "", "mode": "auto" },
+  { "name": "akun2", "wallet": "PK_AKUN2", "bot_token": "TOKEN_BOT2", "chat_id": "", "mode": "auto" }
+]
+```
+
+```bash
+node kintara.js all        # jalanin SEMUA akun (1 screen per akun)
+node kintara.js akun1      # jalanin 1 akun saja
+node kintara.js stop akun1 # stop permanen 1 akun (akun lain jalan terus)
+bash persist-all.sh        # cron keep-alive untuk semua akun + auto-start saat reboot
+```
+
+Kontrol tiap akun lewat bot Telegram-nya masing-masing (`/auto /rock /combat /setkey` dst).
+**Wajib: bot token unik per akun** (1 token = 1 instance; dua proses token sama = Telegram error).
 
 ### 🛡️ Persistensi (otomatis terpasang di VPS kamu)
 
@@ -91,13 +116,21 @@ cd kintara-bot
 # 3. Dependencies
 npm install
 
-# 4. Siapkan .env
-cp .env.example .env
-nano .env   # isi WALLET_PRIVATE_KEY + TELEGRAM_BOT_TOKEN
+# 4. Jalanin — .env template dibuat otomatis
+node kintara.js
+#    → ikuti pesannya: nano .env (isi WALLET_PRIVATE_KEY + TELEGRAM_BOT_TOKEN)
 
-# 5. Jalanin persisten
-./start.sh  # jalan di screen 'kintara' + auto-restart
+# 5. Jalan lagi
+node kintara.js
 ```
+
+<details>
+<summary>⚙️ Mode persisten klasik (screen 'kintara' + keeper + cron)</summary>
+
+```bash
+./start.sh   # jalan di screen 'kintara' + auto-restart + cron keep-alive
+```
+</details>
 
 </details>
 

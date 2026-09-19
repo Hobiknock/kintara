@@ -83,11 +83,15 @@ if [ "$ENV_READY" = "0" ]; then
   echo "   • TELEGRAM_BOT_TOKEN  → token dari @BotFather (chat /newbot)"
   echo ""
   echo "   Abis itu jalanin:"
-  echo "   ~/kintara-bot/start.sh"
+  echo "   node ~/kintara-bot/kintara.js"
+  echo ""
+  echo "   Multi-akun? Copy accounts.example.json -> accounts.json,"
+  echo "   isi per akun, lalu: node kintara.js all && bash persist-all.sh"
 else
   echo "✅ INSTALL SELESAI — .env kamu udah ada (gak diubah)."
   echo ""
-  echo "🚀 Jalanin bot: ~/kintara-bot/start.sh"
+  echo "🚀 Jalanin bot: node ~/kintara-bot/kintara.js"
+  echo "   Multi-akun: node kintara.js all"
 fi
 echo ""
 echo "🛡️ Persistensi otomatis AKTIF di VPS kamu:"
