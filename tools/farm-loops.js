@@ -86,7 +86,8 @@ function watchLevelUps(p, ctx) {
             && !ctx._allDoneSent) {
           ctx._allDoneSent = true;
           const row = SKILL_NAMES.map((s) => ['✅ ' + s, 'lvl ' + snapshot[s]]);
-          ctx.onImportant(questPanel('ALL SKILLS MAX! 🏆', row, '🎉'));
+          // USER: fase-1 tuntas JANGAN lapor Tele — mining diam. (onImportant dinonaktifkan utk event ini)
+
         }
       } catch {}
     }
