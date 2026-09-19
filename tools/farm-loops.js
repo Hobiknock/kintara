@@ -272,7 +272,31 @@ async function runRock(ctx) {
   // Waypoint rotasi POND — 12 titik (tambah 2 biar rotasi lebih rapat, kurangi waktu jalan kosong)
   const POND_WP = [[4,-2],[8,0],[12,4],[6,8],[0,10],[-6,8],[-10,4],[-8,0],[-4,-2],[2,-4],[8,-6],[14,2]];
   let wpIdx = 0, skipStreak = 0, felledSinceMove = 0;
-  const dead = new Map(); // key -> ts blacklist (node gagal/depleted)
+  // ---- AUTO-BANK: inventory stone+coal >= threshold → jalan ke bank, deposit semua, balik mining ----
+  const AUTOBANK_MIN = ctx.autoBankMin || 10000; // total stone+coal di inv sebelum trigger
+  let lastBankAt = 0, nextBankCheck = 0; // cooldown 10 mnt antar pengecekan inv
+  const invTotals = async () => {
+    try { const me = await cli.me(); const bp = (me || {}).backpack || {};
+      return { stone: Number(bp.stone) || 0, coal: Number(bp.coal) || 0, wood: Number(bp.wood) || 0 };
+    } catch { return null; }
+  };
+  const autoBank = async () => {
+    const inv = await invTotals(); if (!inv) return false;
+    if (inv.stone + inv.coal < AUTOBANK_MIN) return false;
+    onEvent(`🏦 inv penuh (stone=${inv.stone} coal=${inv.coal} ≥ ${AUTOBANK_MIN}) — jalan ke bank...`);
+    const now = Date.now();
+    try {
+      if (p.region === 'pond') await gotoResourceZone(p, onEvent, 60, 'rock'); // keluar pond dulu
+      await p.walkTo(bank.BANK_WORLD.x, bank.BANK_WORLD.z, { maxSec: 60 });
+      const r = await bank.depositAll(cli, ['stone', 'coal', 'wood', 'metal']);
+      if (r.moved && r.moved.length) onEvent(`🏦 banked: ${r.moved.join(', ')}`);
+      else onEvent('🏦 bank: tidak ada yang pindah');
+      lastBankAt = now;
+      return true;
+    } catch (e) { onEvent(`⚠️ auto-bank gagal: ${String(e.message).slice(0, 60)}`); return false; }
+  };
+
+  const dead = new Map(); // key -> ts blacklist
   let stone = 0, coal = 0, metal = 0, fails = 0, skips = 0;
   while (!stop()) {
     ctx._lastBeat = Date.now(); // heartbeat mining
@@ -368,6 +392,18 @@ async function runRock(ctx) {
       dead.set(tgt.key, Date.now()); // node habis — tunggu respawn
       skipStreak = 0; felledSinceMove++; // panen sukses → reset streak, catat progres sejak rotasi
       await ssleep(rnd(200, 600)); // jeda antar node — dipangkas (client-only; protokol tetap)
+      // AUTO-BANK: cek inv tiap ≥10 mnt / counter sesi ≥ threshold — deposit kalau inv stone+coal ≥ 10.000
+      const nowB = Date.now();
+      if ((stone + coal >= AUTOBANK_MIN || nowB > nextBankCheck)) {
+        nextBankCheck = nowB + 600000; // jangan spam cek — cooldown 10 mnt
+        if (await autoBank()) {
+          const session = { stone, coal };
+          onEvent(`⛏️ balik mining — sesi berlanjut (sudah +${session.stone} stone +${session.coal} coal)`);
+          // balik ke zona mining
+          if (!(await gotoPond(p, onEvent))) await gotoResourceZone(p, onEvent);
+          let wb = 0; while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && wb < 15000) { await sleep(650); wb += 1000; }
+        }
+      }
     } else {
       fails++; dead.set(tgt.key, Date.now() + (p.region === 'pond' ? 150000 : 0)); // pond: blacklist 2.5 mnt (respawn lambat)
       if (fails % 10 === 1) onEvent(`⚠️ ${fails} node skip (gagal/depleted)`);
