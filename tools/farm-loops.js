@@ -392,10 +392,10 @@ async function runRock(ctx) {
       dead.set(tgt.key, Date.now()); // node habis — tunggu respawn
       skipStreak = 0; felledSinceMove++; // panen sukses → reset streak, catat progres sejak rotasi
       await ssleep(rnd(200, 600)); // jeda antar node — dipangkas (client-only; protokol tetap)
-      // AUTO-BANK: cek inv tiap ≥10 mnt / counter sesi ≥ threshold — deposit kalau inv stone+coal ≥ 10.000
+      // AUTO-BANK: cek inv tiap ≥6 jam / counter sesi ≥ threshold — deposit kalau inv stone+coal ≥ 10.000
       const nowB = Date.now();
       if ((stone + coal >= AUTOBANK_MIN || nowB > nextBankCheck)) {
-        nextBankCheck = nowB + 600000; // jangan spam cek — cooldown 10 mnt
+        nextBankCheck = nowB + 21600000; // jangan spam cek — cooldown 6 jam
         if (await autoBank()) {
           const session = { stone, coal };
           onEvent(`⛏️ balik mining — sesi berlanjut (sudah +${session.stone} stone +${session.coal} coal)`);
