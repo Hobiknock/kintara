@@ -82,7 +82,8 @@ function makeCtx(name, opts = {}) {
 let cli = null, player = null, cliAt = 0;
 async function getClient() {
   if (cli && Date.now() - cliAt < 30 * 60000) return cli;
-  const r = await KintaraClient.create();
+  const cfgmod = require('../config');
+  const r = await KintaraClient.create(cfgmod.config.walletPrivateKey ? { privateKey: cfgmod.config.walletPrivateKey, forceLogin: true } : { forceLogin: true });
   cli = r.client; player = r.player; cliAt = Date.now();
   return cli;
 }
@@ -497,10 +498,47 @@ async function hDiag() {
   return `🔧 <b>Diag</b>\n👤 ${player?.displayName || '?'} (id ${player?.id || '?'})\n🧭 shard: ${srv ? srv.shardId + ' @ ' + srv.wsBaseUrl : '?'}\n📈 avg lvl: ${st?.avg ?? '?'}\n🎒 inv ${(me?.backpack?.invSlots || []).filter(Boolean).length}/24 | gold ${me?.backpack?.gold || 0}\n🌐 api: ${c.apiBase}`;
 }
 
+async function hSetKey(pk) {
+  pk = String(pk || '').trim();
+  if (!pk) return `🔑 Pakai: <code>/setkey &lt;private_key_base58&gt;</code>`;
+  try {
+    const bs58 = require('bs58');
+    const nacl = require('tweetnacl');
+    const raw = bs58.default ? bs58.default.decode(pk) : bs58.decode(pk);
+    if (raw.length !== 64) return '❌ Key gak valid (bukan 64 byte). Kirim base58 secret key Solana.';
+    const pub = nacl.sign.keyPair.fromSecretKey(raw).publicKey;
+    const b58 = bs58.default ? bs58.default.encode(pub) : bs58.encode(pub);
+    const cfgmod = require('../config');
+    cfgmod.persistEnv('WALLET_PRIVATE_KEY', pk);
+    // PENTING: object config di module uda nyimpen nilai LAMA sejak boot —
+    // update in-place biar KintaraClient.create() baca key baru
+    cfgmod.config.walletPrivateKey = pk;
+    cfgmod.config.playerId = ''; // jangan bawa player id akun lama
+    for (const k of Object.keys(process.env)) if (k === 'MY_PLAYER_ID') delete process.env[k];
+    try { require('fs').chmodSync(require('path').join(__dirname, '..', '.env'), 0o600); } catch {}
+    cli = null; player = null; cliAt = 0; // force relogin dgn wallet baru
+    const c = await getClient();
+    // detail akun + levels ala /skills
+    const pid = player?.id || ((await c.me().catch(() => ({})))?.player?.id);
+    const st = await c.playerStats(pid).catch(() => ({}));
+    const xp = st.skillXp || {};
+    const avg = Number.isFinite(Number(st.avg)) ? Number(st.avg) : '?';
+    const lvl = (v) => { try { return levelFromTotalXp(v || 0); } catch { return '?'; } };
+    const lv = `⚔️ combat ${lvl(xp.combat)} • 🪓 wood ${lvl(xp.woodcutting)} • ⛏ mining ${lvl(xp.mining)}\n🎣 fishing ${lvl(xp.fishing)} • 🍳 cooking ${lvl(xp.cooking)} • 🔨 smithing ${lvl(xp.smithing)}`;
+    const meP = (await c.me().catch(() => ({})))?.player || {};
+  const nm = player?.display_name || player?.displayName || meP.display_name || meP.displayName || '';
+    return `✅ Private key diganti & AKTIF.\n👛 Wallet: <code>${b58}</code>\n👤 Akun: <b>${nm || '(belum ada nama)'}</b> (id ${pid || '?'})\n📊 Avg lvl ${avg}\n${lv}`;
+    tg.send(msg).catch(() => {});
+    return msg;
+  } catch (e) {
+    return '❌ Gagal: ' + String(e.message).slice(0, 120);
+  }
+}
+
 function hHelp() {
   return `🤖 <b>Kintara Bot — Commands</b>\n` +
     `/status — bot status &amp; inventory\n/skills — skill levels, XP, avg level\n/balance — gold/$KINS/resources\n/market — marketplace prices\n/server — live server queues\n/version — current game version\n/quest — daily quests (auto-claim)\n/spinner — 🎡 free spin wheel (12h)\n/diag — auth, shard, process\n\n` +
-    `/rock — mining stone+coal ⛏ (di POND — node rapat, rate 3x world)\n/stone — mining khusus stone 🪨\n/coal — mining khusus coal ⬛\n/wood — woodcutting 🪓\n/fish — fishing 🎣 + auto-masak jadi cooked 🍳 (1 flow)\n/cook (alias /cooking) — masak semua ikan mentah doang 🍳\n/combat — hunt zombie ⚔️ (/combat boss = dragon 🐉)\n/auto — automatic orchestrator (smart switching) 🧠\n/stop — stop all\n/help — command list\n\n` +
+    `/rock — mining stone+coal ⛏ (di POND — node rapat, rate 3x world)\n/stone — mining khusus stone 🪨\n/coal — mining khusus coal ⬛\n/wood — woodcutting 🪓\n/fish — fishing 🎣 + auto-masak jadi cooked 🍳 (1 flow)\n/cook (alias /cooking) — masak semua ikan mentah doang 🍳\n/combat — hunt zombie ⚔️ (/combat boss = dragon 🐉)\n/auto — automatic orchestrator (smart switching) 🧠\n/stop — stop all\n/setkey — ganti private key wallet 🔑\n/help — command list\n\n` +
     `<i>1 akun = 1 aktivitas (aman dari anti-cheat). Combat pakai bank-first + auto-survival.</i>`;
 }
 
@@ -533,6 +571,7 @@ const commands = {
   saldo: hBalance,
   diag: hDiag,
   stop: stopActivity,
+  setkey: (args) => hSetKey(args.join(' ')),
   help: hHelp,
   start: hHelp,
 };
@@ -567,6 +606,7 @@ const commands = {
     { command: 'version', description: '🧩 Current game version' },
     { command: 'balance', description: '💰 Gold / $KINS / resources' },
     { command: 'diag', description: '🔧 Auth, shard, process' },
+    { command: 'setkey', description: '🔑 Ganti private key wallet' },
     { command: 'stop', description: '⏹️ Stop semua aktivitas' },
     { command: 'help', description: '📖 Command list' },
   ].map((c) => ({ command: c.command, description: c.description.slice(0, 256) }));
