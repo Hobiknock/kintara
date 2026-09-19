@@ -201,7 +201,7 @@ async function applyRandomOutfit(cli) {
       topFx: null, pantsFx: null, shoeFx: null, glasses: null,
       faceMask: null, handProp: null, torsoDecal: null, pantsPattern: null, shoeCosmetic: null,
     };
-    const r = await cli.saveOutfit(outfit);
+    const r = await cli.saveOutfit({ outfit });
     if (r?.ok) { cli._outfitCache = outfit; log(`🎨 outfit random terpasang (hat=${outfit.hat} top=${outfit.top} pants=${outfit.pants} shoe=${outfit.shoe})`); }
     else log('outfit save: ' + JSON.stringify(r).slice(0, 100));
   } catch (e) { log('outfit gagal (lanjut tanpa outfit): ' + e.message); }
