@@ -45,7 +45,7 @@ async function connectPresence(cli, onEvent, attempt = 0, forceShard = null) {
       ws.on('error', (e) => { clearTimeout(to); reject(e); });
       ws.on('open', () => ws.send(JSON.stringify({ t: 'q_ping' })));
     });
-    const p = new Presence(shardStr, { clientRef: cli, wsBaseUrl: wsBase, connectToken });
+    const p = new Presence(shardStr, { clientRef: cli, wsBaseUrl: wsBase, connectToken, savedOutfit: cli._outfitCache || null });
     p.setCookie(cli.cookie, cli.player);
     p.tut = -1; // tutorial selesai (akun farm)
     p.on('log', () => {});
