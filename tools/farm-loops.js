@@ -72,11 +72,23 @@ function watchLevelUps(p, ctx) {
   const { levelFromTotalXp } = require('../lib/skillXp');
   const last = {};
   const SKILL_KEY = { combat: 'combat', woodcutting: 'woodcutting', mining: 'mining', fishing: 'fishing', cooking: 'cooking' };
-  const checkCap = (skill, lv) => {
+  const SKILL_NAMES = Object.keys(SKILL_KEY);
+  const checkCap = (skill, lv, lastAll) => {
     // capLevel: batas level per sesi (mis. 5) — stop loop saat skill terkait nyentuh batas
     if (ctx.capLevel != null && SKILL_KEY[skill] && lv >= ctx.capLevel) {
       ctx.onImportant(`🎯 ${skill} capai lvl ${ctx.capLevel} — sesi dihentikan`);
-      try { ctx.stop(); } catch {}
+      try { ctx._stop = true; } catch {} // FIX: dulu ctx.stop() cuma getter (_stop gak pernah di-set) — sesi gak pernah beneran berhenti
+      try { ctx.stop && ctx.stop(); } catch {}
+      // laporan "semua lv 5" — dikirim SEKALI per akun, hanya jika SEMUA skill >= capLevel
+      try {
+        const snapshot = { ...lastAll, [skill]: lv };
+        if (SKILL_NAMES.every((s) => snapshot[s] != null && snapshot[s] >= ctx.capLevel)
+            && !ctx._allDoneSent) {
+          ctx._allDoneSent = true;
+          const row = SKILL_NAMES.map((s) => ['✅ ' + s, 'lvl ' + snapshot[s]]);
+          ctx.onImportant(questPanel('ALL SKILLS MAX! 🏆', row, '🎉'));
+        }
+      } catch {}
     }
   };
   p.on('skill_xp', (xp) => {
@@ -84,8 +96,9 @@ function watchLevelUps(p, ctx) {
       for (const [skill, total] of Object.entries(xp || {})) {
         const lv = levelFromTotalXp(total);
         if (last[skill] != null && lv > last[skill]) {
-          ctx.onImportant(questPanel('LEVEL UP!', [['📈 ' + skill, 'lvl ' + lv + ' 🆙']], '🎉'));
-          checkCap(skill, lv);
+          // ⚠️ capLevel aktif (fase 1): level-up individual TIDAK dilaporkan ke Tele —
+          // cuma berhenti pas cap tersentuh. Report ke Tele hanya saat ALL skills >= cap.
+          checkCap(skill, lv, last);
         }
         last[skill] = lv;
       }

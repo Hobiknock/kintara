@@ -5,6 +5,13 @@ const path = require('path');
 
 const ENV_PATH = path.join(__dirname, '.env');
 
+// ---- MULTI-ACCOUNT: kalau KINTARA_ACCOUNT diset (oleh start-account.sh),
+// kredensial akun dari accounts.json meng-override .env sebelum config dibaca.
+const ACCOUNT_NAME = process.env.KINTARA_ACCOUNT || '';
+if (ACCOUNT_NAME) {
+  require('./lib/accounts').applyToEnv(ACCOUNT_NAME);
+}
+
 function loadEnv() {
   if (!fs.existsSync(ENV_PATH)) return;
   const raw = fs.readFileSync(ENV_PATH, 'utf-8');

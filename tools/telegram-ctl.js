@@ -509,7 +509,12 @@ async function hSetKey(pk) {
     const pub = nacl.sign.keyPair.fromSecretKey(raw).publicKey;
     const b58 = bs58.default ? bs58.default.encode(pub) : bs58.encode(pub);
     const cfgmod = require('../config');
-    cfgmod.persistEnv('WALLET_PRIVATE_KEY', pk);
+    if (process.env.KINTARA_ACCOUNT) {
+      // MODE MULTI-ACCOUNT: persist ke accounts.json (bukan .env), lalu update in-place
+      require('../lib/accounts').update(process.env.KINTARA_ACCOUNT, { wallet: pk });
+    } else {
+      cfgmod.persistEnv('WALLET_PRIVATE_KEY', pk); // mode single-account lama
+    }
     // PENTING: object config di module uda nyimpen nilai LAMA sejak boot —
     // update in-place biar KintaraClient.create() baca key baru
     cfgmod.config.walletPrivateKey = pk;
@@ -582,7 +587,7 @@ const commands = {
     log('TELEGRAM_BOT_TOKEN kosong — bikin bot via @BotFather, taruh token di .env (TELEGRAM_BOT_TOKEN=...), restart.');
     process.exit(1);
   }
-  log('BOOT telegram-ctl — login kintara...');
+  log(`BOOT telegram-ctl${process.env.KINTARA_ACCOUNT ? ' [akun: ' + process.env.KINTARA_ACCOUNT + ']' : ''} — login kintara...`);
   await getClient();
   log('login ok, player=' + (player?.displayName || player?.id));
   // menu command native (muncul pas tekan "/" di Telegram)

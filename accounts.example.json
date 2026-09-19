@@ -1,0 +1,10 @@
+[
+  {
+    "name": "akun1",
+    "wallet": "ISI_PRIVATE_KEY_BASE58_DISINI",
+    "bot_token": "ISI_TOKEN_BOTFATHER_DISINI",
+    "chat_id": "ISI_CHAT_ID_KAMU",
+    "mode": "auto",
+    "server": 0
+  }
+]
