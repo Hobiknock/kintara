@@ -5,7 +5,7 @@ DIR="${1:-$HOME/kintara-bot-private}"
 
 echo "=== 1. Clone repo ==="
 if [ ! -d "$DIR" ]; then
-  git clone -b lifecycle https://github.com/Hobiknock/kintara-bot-private.git "$DIR"
+  git clone -b lifetime https://github.com/Hobiknock/kintara-bot-private.git "$DIR"
 else
   echo "repo sudah ada — skip clone"
 fi

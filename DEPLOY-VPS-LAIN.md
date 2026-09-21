@@ -2,7 +2,7 @@
 
 ## 1. Clone & install
 ```bash
-git clone -b lifecycle https://github.com/Hobiknock/kintara-bot-private.git
+git clone -b lifetime https://github.com/Hobiknock/kintara-bot-private.git
 cd kintara-bot-private
 npm install
 ```
