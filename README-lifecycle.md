@@ -56,12 +56,42 @@ SELL_THRESHOLD=10000
 
 ### 2. Jalankan
 
+#### Otomatis (rekomendasi)
+
 ```bash
-# langsung
+bash start-lifecycle.sh            # spawn screen 'lifetime' + mining-watchdog
+```
+
+atau deploy sekali jalan (clone + install + env + start + cron watchdog):
+
+```bash
+bash deploy-vps.sh
+```
+
+#### Manual (run sendiri)
+
+```bash
+# 0) siapkan dulu: npm install (sekali) + isi WALLETS di .env (lihat langkah 1)
+npm install
+
+# 1) test dulu di depan (lihat log langsung, Ctrl+C buat stop)
 node tools/kintara-lifecycle.js
 
-# atau via screen (rekomendasi)
-screen -dmS lifecycle bash -c 'node tools/kintara-lifecycle.js >> recon/lifecycle.out 2>&1'
+# 2) kalau udah oke, jalankan di background via screen
+screen -dmS lifetime bash -c 'node tools/kintara-lifecycle.js >> recon/lifecycle.out 2>&1'
+
+# 3) jalankan watchdog manual (respawn mining screen tiap 2 menit)
+screen -dmS watchdog bash -c 'node tools/mining-watchdog.js >> recon/watchdog.out 2>&1'
+
+# masuk ke screen buat lihat log live:
+screen -r lifetime      # detach lagi: Ctrl+A lalu D
+```
+
+Kalau mau run 1 wallet doang tanpa .env (quick test):
+
+```bash
+node tools/kintara-lifecycle.js <<< ""   # TIDAK — script baca dari .env saja.
+# Buat test 1 wallet: buat .env mini berisi satu block WALLETS= pk_test
 ```
 
 ### 3. Monitor
