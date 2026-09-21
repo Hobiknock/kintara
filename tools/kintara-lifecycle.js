@@ -362,7 +362,18 @@ async function autoSell(cli, tag, items = ['stone','coal'], totalTarget = Number
             if (!alive) {
               const srv = FORCE_SERVER ? `KINTARA_FORCE_SERVER=${FORCE_SERVER} ` : '';
               execSync(`screen -dmS ${name} bash -c "${srv}KINTARA_NO_PHASE2=1 node ${ROOT}/tools/headless-runner.js '${s.pk}' rock >> ${ROOT}/recon/multi/${name}.out 2>&1"`);
-              log(`${s.tag} ⛏️ mining rock jalan (screen ${name})`);
+              log(`${s.tag} ⛏️ mining rock jalan (screen ${name}) — cek: tail -f recon/multi/${name}.out`);
+              // verifikasi screen beneran hidup
+              await sleep(3000);
+              const ok = (() => { try { execSync(`screen -ls | grep -q ${name}`); return true; } catch { return false; } })();
+              if (!ok) {
+                log(`${s.tag} ⚠️ screen ${name} gagal hidup — coba lagi 10 dtk`);
+                await sleep(10000);
+                execSync(`screen -dmS ${name} bash -c "${srv}KINTARA_NO_PHASE2=1 node ${ROOT}/tools/headless-runner.js '${s.pk}' rock >> ${ROOT}/recon/multi/${name}.out 2>&1"`);
+                log(`${s.tag} mining respawn attempt 2`);
+              }
+            } else {
+              log(`${s.tag} ⛏️ screen ${name} udah jalan — mining tetap jalan (cek tail -f recon/multi/${name}.out)`);
             }
           } catch(e) { log(`${s.tag} fase4 err: ${e.message.slice(0,60)}`); }
         }
