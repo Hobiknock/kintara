@@ -338,6 +338,17 @@ async function autoSell(cli, tag, items = ['stone','coal'], totalTarget = Number
           try {
             const cli = s.cli || await openClient(s);
             await autoSell(cli, s.tag, ['stone','coal'], SELL_THRESHOLD);
+            // BALIK MINING: setelah listing, spawn lagi screen rock (terus-menerus)
+            const { execSync } = require('child_process');
+            const name = `lc-${s.tag}`;
+            const alive = (() => { try { execSync(`screen -ls | grep -q ${name}`); return true; } catch { return false; } })();
+            if (!alive) {
+              const srv = FORCE_SERVER ? `KINTARA_FORCE_SERVER=${FORCE_SERVER} ` : '';
+              execSync(`screen -dmS ${name} bash -c "${srv}KINTARA_NO_PHASE2=1 node ${ROOT}/tools/headless-runner.js '${s.pk}' rock >> ${ROOT}/recon/multi/${name}.out 2>&1"`);
+              log(`${s.tag} 🔄 balik mining rock setelah listing (screen ${name})`);
+            } else {
+              log(`${s.tag} screen ${name} udah jalan — mining lanjut`);
+            }
           } catch(e) { log(`${s.tag} autosell err: ${e.message.slice(0,60)}`); }
         }
       } catch(e) { log(`${s.tag} kins check err: ${e.message.slice(0,60)}`); }
