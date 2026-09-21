@@ -196,12 +196,37 @@ async function autoSell(cli, tag, items = ['stone','coal'], totalTarget = Number
     let active = (mine.listings || []).length;
     const MAX_LISTINGS = 5, MAX_PER_LISTING = 5000;
     let remainingSlots = Math.max(0, MAX_LISTINGS - active);
-    if (!remainingSlots) { log(`[${tag}] listing penuh (${active}/5) — skip sell`); return; }
+    if (!remainingSlots) {
+      log(`[${tag}] listing penuh (${active}/5) — sisanya yang over disimpan ke bank`);
+      try {
+        const meB = await cli.me(); const bpB = meB.backpack || {};
+        const over = (Number(bpB.stone)||0) + (Number(bpB.coal)||0) - KEEP_IN_INV;
+        if (over > 1000) {
+          // harus ada presence utk walk ke bank — reuse sesi p yang udah nyambung
+          await p.walkTo(bank.BANK_WORLD.x, bank.BANK_WORLD.z, { maxSec: 60 }).catch(()=>{});
+          const r = await bank.depositAll(cli, ['stone','coal']);
+          log(`[${tag}] 🏦 banked (fallback): ${(r.moved||[]).join(', ') || 'tidak ada yang pindah'}`);
+        }
+      } catch(e) { log(`[${tag}] bank fallback err: ${e.message.slice(0,60)}`); }
+      return;
+    }
     const me = await cli.me(); const bp = me.backpack || {};
     const inv = bp.invSlots || [];
     let totalListed = 0;
     for (const itemType of items) {
-      if (remainingSlots <= 0) break;
+      if (remainingSlots <= 0) {
+        log(`[${tag}] slot listing habis — sisanya disimpan ke bank`);
+        try {
+          const meB = await cli.me(); const bpB = meB.backpack || {};
+          const overB = (Number(bpB.stone)||0) + (Number(bpB.coal)||0) - KEEP_IN_INV;
+          if (overB > 1000) {
+            await p.walkTo(bank.BANK_WORLD.x, bank.BANK_WORLD.z, { maxSec: 60 }).catch(()=>{});
+            const rb = await bank.depositAll(cli, ['stone','coal']);
+            log(`[${tag}] 🏦 banked (sisa listing): ${(rb.moved||[]).join(', ') || 'tidak ada yang pindah'}`);
+          }
+        } catch(e) { log(`[${tag}] bank sisa err: ${e.message.slice(0,60)}`); }
+        break;
+      }
       let qtyTotal = Number(bp[itemType]) || 0;
       if (qtyTotal < 1000) continue; // jangan kecil-kecilan
       const stats = await cli.marketplaceStats(itemType);
@@ -227,6 +252,23 @@ async function autoSell(cli, tag, items = ['stone','coal'], totalTarget = Number
   } finally {
     try { p.close(); } catch {}
   }
+}
+
+// helper: simpan kelebihan stok (di atas KEEP_IN_INV) ke bank — butuh presence aktif
+async function bankOverflow(cli, tag, items = ['stone','coal']) {
+  try {
+    const me = await cli.me(); const bp = me.backpack || {};
+    const tot = items.reduce((a,t)=>a+(Number(bp[t])||0),0);
+    if (tot <= KEEP_IN_INV) return false;
+    const p = await loops.connectPresence(cli, (m)=>log(`[${tag}] ${m}`));
+    try {
+      await sleep(2000);
+      await p.walkTo(bank.BANK_WORLD.x, bank.BANK_WORLD.z, { maxSec: 60 }).catch(()=>{});
+      const r = await bank.depositAll(cli, items);
+      log(`[${tag}] 🏦 banked: ${(r.moved||[]).join(', ') || 'tidak ada yang pindah'}`);
+      return true;
+    } finally { try { p.close(); } catch {} }
+  } catch(e) { log(`[${tag}] bankOverflow err: ${e.message.slice(0,60)}`); return false; }
 }
 
 // ---------- orchestrator ----------
@@ -333,6 +375,7 @@ async function autoSell(cli, tag, items = ['stone','coal'], totalTarget = Number
 
   // FASE 3 — seleksi KINS (loop jam-jaman; iterasi pertama langsung jalan)
   const SELL_THRESHOLD = Number(process.env.SELL_THRESHOLD || 10000);
+const KEEP_IN_INV = Number(process.env.KEEP_IN_INV || 5000); // sisanya simpan di bank
   for (let iter = 0; ; iter++) {
     if (iter > 0) await sleep(3600 * 1000);
     log('=== FASE 3 cek KINS ===');
@@ -357,12 +400,33 @@ async function autoSell(cli, tag, items = ['stone','coal'], totalTarget = Number
               const me = await cli.me();
               const bp = me.backpack || {};
               const stock = (Number(bp.stone)||0) + (Number(bp.coal)||0);
-              if (stock < 5000) {
-                log(`${s.tag} stok ${stock} <5000 — mining dulu`);
+              // listing lama yang belum laku → cancel dulu, tarik stoknya balik biar bisa re-list
+              try {
+                const mine = await cli.marketplaceListings({ mine:true, limit: 50 });
+                const rows = (mine && (mine.listings || mine.data || mine)) || [];
+                if (Array.isArray(rows) && rows.length) {
+                  for (const L of rows) {
+                    const id = L.listingId || L.id; if (!id) continue;
+                    const qty = Number(L.quantity || L.qty || 0);
+                    log(`${s.tag} listing lama ${L.itemType} x${qty} belum laku — cancel`);
+                    try { await cli.marketplaceCancel(id); } catch(e){ log(`${s.tag} cancel err: ${e.message.slice(0,50)}`); }
+                    await sleep(rnd(1500,3000));
+                  }
+                }
+              } catch(e) { log(`${s.tag} cek listing lama err: ${e.message.slice(0,60)}`); }
+              // setelah cancel, baca ulang backpack — item canceled balik ke inv
+              const me2 = await cli.me();
+              const bp2 = me2.backpack || {};
+              const stock2 = (Number(bp2.stone)||0) + (Number(bp2.coal)||0);
+              if (stock2 < 5000) {
+                log(`${s.tag} stok ${stock2} <5000 — mining dulu`);
+                await bankOverflow(cli, s.tag, ['stone','coal']); // jaga inv tetap ada ruang
               } else {
                 await autoSell(cli, s.tag, ['stone','coal'], SELL_THRESHOLD);
                 s.lastListingAt = Date.now();
                 log(`${s.tag} 🏷️ listing selesai — wajib mining 3 jam sebelum listing lagi`);
+                // AUTO-BANK fallback: sisanya (di atas KEEP_IN_INV) masuk bank
+                await bankOverflow(cli, s.tag, ['stone','coal']);
               }
             }
             // pastikan mining rock jalan (apapun kondisi di atas, setelah listing / selama nunggu 3 jam)
