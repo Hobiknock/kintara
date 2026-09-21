@@ -263,9 +263,9 @@ async function autoSell(cli, tag, items = ['stone','coal'], totalTarget = Number
       const all5 = st && st.skillXp && SKILLS.every(k => levelFromTotalXp(st.skillXp[k]||0) >= 5);
       if (!all5) { s.phase = 1; log(`${s.tag} → mulai FASE 1`); continue; }
       log(`${s.tag} semua skill ≥5 — SKIP FASE 1`);
-      const mnlv = levelFromTotalXp(st.skillXp.mining || 0);
-      if (mnlv < 10) { s.phase = 2; log(`${s.tag} mining lv=${mnlv} <10 → mulai FASE 2 (rock)`); continue; }
-      log(`${s.tag} mining lv=${mnlv} ≥10 — SKIP FASE 2`);
+      const alv = Number(st.avg) || 0;
+      if (alv < 10) { s.phase = 2; log(`${s.tag} level akun=${alv.toFixed(1)} <10 → mulai FASE 2 (rock)`); continue; }
+      log(`${s.tag} level akun=${alv.toFixed(1)} ≥10 — SKIP FASE 2`);
       const bal = await kinsBalance(s.pk);
       if (bal < 1000) { s.phase = 3; s.kins = bal; log(`${s.tag} kins=${bal} <1000 → tunggu FASE 3`); continue; }
       const age = await kinsAgeDays(s.pk);
@@ -288,12 +288,12 @@ async function autoSell(cli, tag, items = ['stone','coal'], totalTarget = Number
   }
 
   // FASE 2 — mining rock (stone & coal) SAJA setelah semua skill lv 5.
-  // Skill lain berhenti di lv 5 (nggak di-push lagi). Stop saat MINING level >= 10.
+  // Skill lain berhenti di lv 5 (nggak di-push lagi). Stop saat LEVEL AKUN (avg) >= 10.
   const { execSync, spawn } = require('child_process');
-  const miningLevelOf = async (cli) => {
+  // LEVEL AKUN = avg semua skill (st.avg dari playerStats)
+  const accountLevelOf = async (cli) => {
     const st = await cli.playerStats(cli.player.id).catch(()=>null);
-    if (!st || !st.skillXp) return 0;
-    return levelFromTotalXp(st.skillXp.mining || 0); // level MINING, bukan avg
+    return st ? (Number(st.avg) || 0) : 0;
   };
   // buat sesi mining berkelanjutan per wallet — hanya yang phase=2 (mining <10)
   // SEBAR ke berbagai server: round-robin 12-16 asia
@@ -307,24 +307,24 @@ async function autoSell(cli, tag, items = ['stone','coal'], totalTarget = Number
     try { execSync(`screen -S ${name} -X quit 2>/dev/null`); } catch {}
     const envSrv = `KINTARA_FORCE_SERVER=${srv} `;
     execSync(`screen -dmS ${name} bash -c "${envSrv}KINTARA_NO_PHASE2=1 node ${ROOT}/tools/headless-runner.js '${s.pk}' rock >> ${ROOT}/recon/multi/${name}.out 2>&1"`);
-    log(`${s.tag} → screen ${name} (fase 2 rock @ server ${srv} — lanjut sampai mining≥10)`);
+    log(`${s.tag} → screen ${name} (fase 2 rock @ server ${srv} — lanjut sampai level akun ≥10)`);
     await sleep(20000);
   }
-  // monitor mining level: cek tiap 15 menit; MINING >= 10 → stop mining akun itu (screen quit)
+  // monitor level akun: cek tiap 15 menit; avg level >= 10 → STOP script akun itu (screen quit)
   for (;;) {
     await sleep(15 * 60 * 1000);
     for (const s of state) {
       if (!s.cli || s.phase >= 3) continue;
       try {
-        const mnlv = await miningLevelOf(s.cli);
-        if (mnlv >= 10) {
+        const alv = await accountLevelOf(s.cli);
+        if (alv >= 10) {
           try { execSync(`screen -S lc-${s.tag} -X quit 2>/dev/null`); } catch {}
           s.phase = 3;
-          log(`${s.tag} mining lv=${mnlv} ≥ 10 — FASE 2 selesai, masuk seleksi FASE 3 (harus hold 1000 KINS)`);
+          log(`${s.tag} level akun=${alv.toFixed(1)} ≥ 10 — FASE 2 selesai, mining STOP, masuk seleksi FASE 3 (harus hold 1000 KINS)`);
         } else {
-          log(`${s.tag} mining lv=${mnlv} < 10 — mining rock lanjut`);
+          log(`${s.tag} level akun=${alv.toFixed(1)} < 10 — mining rock lanjut`);
         }
-      } catch(e) { log(`${s.tag} mining check err: ${e.message.slice(0,60)}`); }
+      } catch(e) { log(`${s.tag} level check err: ${e.message.slice(0,60)}`); }
       await sleep(1500);
     }
     // begitu semua fase 2 selesai → keluar dari monitor ke fase 3

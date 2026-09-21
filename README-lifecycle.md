@@ -8,13 +8,13 @@ Script otomatis untuk akun kintara multi-wallet: dari tutorial sampai jual hasil
 |---|---|---|
 | **Deteksi** | Cek kondisi tiap wallet — fase yang udah selesai langsung di-skip | - |
 | **1** | Tutorial + outfit random + semua skill ke **lv 5** | semua skill ≥ 5 |
-| **2** | Mining rock SAJA (stone & coal) — skill lain berhenti di lv 5 | **level MINING ≥ 10** |
+| **2** | Mining rock SAJA (stone & coal) — skill lain berhenti di lv 5 | **level akun ≥ 10** |
 | **3** | Seleksi: wallet pegang **≥ 1000 $KINS**? | eligible semua / lapor TG |
 | **4** | Cek umur KINS ≥ **24 jam** + **auto-sell** hasil mining di market | terus berjalan (cek per jam) |
 
 ### Aturan penting fase 2
 - Setelah semua skill lv 5, yang jalan cuma **mining rock (stone & coal)** — skill lain berhenti di lv 5.
-- Stop saat **level MINING ≥ 10** (bukan avg) → lanjut seleksi fase 3 (harus hold 1000 KINS).
+- Stop saat **level AKUN ≥ 10** (avg semua skill, `playerStats.avg`) → mining berhenti, lanjut seleksi fase 3 (harus hold 1000 KINS).
 
 ### Aturan penting fase 4 (auto-sell)
 - Listing **maksimal 5.000 stone/coal per listing**
@@ -139,5 +139,5 @@ tunggu yang lama kejual/expired.
 
 **Q: Knpa fase 2 cuma mining rock?**
 A: Setelah semua skill lv 5, yang di-push cuma mining (stone & coal) sampai
-**mining lv 10** — skill lain diem di lv 5. Setelah itu akun stop mining dan
+**level akun ≥ 10** — skill lain diem di lv 5. Setelah itu akun stop mining dan
 masuk seleksi fase 3 (wajib hold 1000 KINS).
