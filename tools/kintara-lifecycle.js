@@ -254,7 +254,7 @@ async function autoSell(cli, tag, items = ['stone','coal'], totalTarget = Number
   };
 
   // DETEKSI FASE AWAL per wallet — skip fase yang udah beres:
-  // semua skill >=5? skip F1 → avg>=10? skip F2 → KINS>=1000 & umur>=24h? skip F3 → langsung F4 (autosell)
+  // semua skill >=5? skip F1 → mining>=10? skip F2 → KINS>=1000 & umur>=24h? skip F3 → langsung F4 (autosell)
   for (const s of state) {
     try {
       const cli = await openClient(s);
@@ -263,9 +263,9 @@ async function autoSell(cli, tag, items = ['stone','coal'], totalTarget = Number
       const all5 = st && st.skillXp && SKILLS.every(k => levelFromTotalXp(st.skillXp[k]||0) >= 5);
       if (!all5) { s.phase = 1; log(`${s.tag} → mulai FASE 1`); continue; }
       log(`${s.tag} semua skill ≥5 — SKIP FASE 1`);
-      const avg = st.avg || 0;
-      if (avg < 10) { s.phase = 2; log(`${s.tag} avg=${avg.toFixed(1)} <10 → mulai FASE 2 (rock)`); continue; }
-      log(`${s.tag} avg=${avg.toFixed(1)} ≥10 — SKIP FASE 2`);
+      const mnlv = levelFromTotalXp(st.skillXp.mining || 0);
+      if (mnlv < 10) { s.phase = 2; log(`${s.tag} mining lv=${mnlv} <10 → mulai FASE 2 (rock)`); continue; }
+      log(`${s.tag} mining lv=${mnlv} ≥10 — SKIP FASE 2`);
       const bal = await kinsBalance(s.pk);
       if (bal < 1000) { s.phase = 3; s.kins = bal; log(`${s.tag} kins=${bal} <1000 → tunggu FASE 3`); continue; }
       const age = await kinsAgeDays(s.pk);
@@ -287,14 +287,15 @@ async function autoSell(cli, tag, items = ['stone','coal'], totalTarget = Number
     await sleep(rnd(15000, 30000)); // stagger anti rate-limit
   }
 
-  // FASE 2 — rock mining sampai AVG >= 10 (bukan mining lv10).
-  // Semua skill lv5 → mining rock terus; berhenti hanya saat rata-rata semua skill capai 10.
+  // FASE 2 — mining rock (stone & coal) SAJA setelah semua skill lv 5.
+  // Skill lain berhenti di lv 5 (nggak di-push lagi). Stop saat MINING level >= 10.
   const { execSync, spawn } = require('child_process');
-  const avgOf = async (cli) => {
+  const miningLevelOf = async (cli) => {
     const st = await cli.playerStats(cli.player.id).catch(()=>null);
-    return st ? (st.avg || 0) : 0;
+    if (!st || !st.skillXp) return 0;
+    return levelFromTotalXp(st.skillXp.mining || 0); // level MINING, bukan avg
   };
-  // buat sesi mining berkelanjutan per wallet — hanya yang phase=2 (belum avg 10)
+  // buat sesi mining berkelanjutan per wallet — hanya yang phase=2 (mining <10)
   // SEBAR ke berbagai server: round-robin 12-16 asia
   const SERVERS = (process.env.KINTARA_SERVERS || '12,13,14,15,16').split(',').map(n=>n.trim()).filter(Boolean);
   let srvIdx = 0;
@@ -306,24 +307,24 @@ async function autoSell(cli, tag, items = ['stone','coal'], totalTarget = Number
     try { execSync(`screen -S ${name} -X quit 2>/dev/null`); } catch {}
     const envSrv = `KINTARA_FORCE_SERVER=${srv} `;
     execSync(`screen -dmS ${name} bash -c "${envSrv}KINTARA_NO_PHASE2=1 node ${ROOT}/tools/headless-runner.js '${s.pk}' rock >> ${ROOT}/recon/multi/${name}.out 2>&1"`);
-    log(`${s.tag} → screen ${name} (fase 2 rock @ server ${srv} — lanjut sampai avg≥10)`);
+    log(`${s.tag} → screen ${name} (fase 2 rock @ server ${srv} — lanjut sampai mining≥10)`);
     await sleep(20000);
   }
-  // monitor avg: cek tiap 15 menit; avg>=10 → stop mining akun itu (screen quit)
+  // monitor mining level: cek tiap 15 menit; MINING >= 10 → stop mining akun itu (screen quit)
   for (;;) {
     await sleep(15 * 60 * 1000);
     for (const s of state) {
       if (!s.cli || s.phase >= 3) continue;
       try {
-        const avg = await avgOf(s.cli);
-        if (avg >= 10) {
+        const mnlv = await miningLevelOf(s.cli);
+        if (mnlv >= 10) {
           try { execSync(`screen -S lc-${s.tag} -X quit 2>/dev/null`); } catch {}
           s.phase = 3;
-          log(`${s.tag} avg=${avg.toFixed(1)} ≥ 10 — FASE 2 selesai, masuk seleksi FASE 3`);
+          log(`${s.tag} mining lv=${mnlv} ≥ 10 — FASE 2 selesai, masuk seleksi FASE 3 (harus hold 1000 KINS)`);
         } else {
-          log(`${s.tag} avg=${avg.toFixed(1)} < 10 — mining rock lanjut`);
+          log(`${s.tag} mining lv=${mnlv} < 10 — mining rock lanjut`);
         }
-      } catch(e) { log(`${s.tag} avg check err: ${e.message.slice(0,60)}`); }
+      } catch(e) { log(`${s.tag} mining check err: ${e.message.slice(0,60)}`); }
       await sleep(1500);
     }
     // begitu semua fase 2 selesai → keluar dari monitor ke fase 3
