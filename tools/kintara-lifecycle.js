@@ -191,10 +191,10 @@ async function autoSell(cli, tag, items = ['stone','coal'], totalTarget = Number
   try {
     await sleep(2500);
     await p.walkTo(bank.BANK_WORLD.x, bank.BANK_WORLD.z, { maxSec: 60 }).catch(()=>{});
-    // hitung listing aktif — max 5
+    // hitung listing aktif — max 5 (kita pakai 4: 2 stone + 2 coal per siklus)
     const mine = await cli.marketplaceListings({ mine:true, limit: 50 });
     let active = (mine.listings || []).length;
-    const MAX_LISTINGS = 5, MAX_PER_LISTING = 5000;
+    const MAX_LISTINGS = 5, MAX_PER_LISTING = PER_LISTING;
     let remainingSlots = Math.max(0, MAX_LISTINGS - active);
     if (!remainingSlots) {
       log(`[${tag}] listing penuh (${active}/5) — sisanya yang over disimpan ke bank`);
@@ -227,12 +227,18 @@ async function autoSell(cli, tag, items = ['stone','coal'], totalTarget = Number
         } catch(e) { log(`[${tag}] bank sisa err: ${e.message.slice(0,60)}`); }
         break;
       }
+      // ATURAN SIKLUS: butuh LISTS_PER_ITEM × PER_LISTING stok per item — kalau belum, jangan list (tunggu kumpul)
+      const needPerItem = LISTS_PER_ITEM * PER_LISTING; // 10000 per item
       let qtyTotal = Number(bp[itemType]) || 0;
-      if (qtyTotal < 1000) continue; // jangan kecil-kecilan
+      if (qtyTotal < needPerItem) {
+        log(`[${tag}] ${itemType} ${qtyTotal} < ${needPerItem} (${LISTS_PER_ITEM}x${PER_LISTING}) — jangan list dulu, tunggu kumpul`);
+        continue;
+      }
       const stats = await cli.marketplaceStats(itemType);
-      let left = Math.min(qtyTotal, Math.max(0, totalTarget - totalListed));
-      while (left >= 1000 && remainingSlots > 0) {
-        const chunk = Math.min(MAX_PER_LISTING, left); // max 5000/listing
+      let left = Math.min(qtyTotal, needPerItem);
+      let listedThisItem = 0;
+      while (left >= 1000 && remainingSlots > 0 && listedThisItem < LISTS_PER_ITEM) {
+        const chunk = Math.min(PER_LISTING, left); // 5000/listing
         // slot index diambil fresh tiap listing (backpack berubah setelah listing)
         const meNow = await cli.me();
         const invNow = (meNow.backpack || {}).invSlots || [];
@@ -243,7 +249,7 @@ async function autoSell(cli, tag, items = ['stone','coal'], totalTarget = Number
           const r = await cli.marketplaceSell({ itemType, slotKind:'inv', slotIndex:idx, quantity:chunk, currency:'token', priceUsd:Number(priceUsd.toFixed(2)), fleet:'', shardId:'' });
           if (r && r.ok !== false) {
             log(`[${tag}] 🏷️ listed ${chunk} ${itemType} @ ${priceUsd.toFixed(2)} USD (${remainingSlots-1} slot sisa)`);
-            totalListed += chunk; remainingSlots--; left -= chunk;
+            totalListed += chunk; listedThisItem++; remainingSlots--; left -= chunk;
           } else { log(`[${tag}] listing ${itemType} ditolak: ${JSON.stringify(r).slice(0,80)}`); break; }
         } catch(e) { log(`[${tag}] sell ${itemType} err: ${e.message.slice(0,80)}`); break; }
         await sleep(rnd(2000, 4000)); // humanlike antar listing
@@ -374,7 +380,8 @@ async function bankOverflow(cli, tag, items = ['stone','coal']) {
   }
 
   // FASE 3 — seleksi KINS (loop jam-jaman; iterasi pertama langsung jalan)
-  const SELL_THRESHOLD = Number(process.env.SELL_THRESHOLD || 10000);
+  const LISTS_PER_ITEM = Number(process.env.LISTS_PER_ITEM || 2);   // 2 listing per item (stone x2, coal x2) = 4 slot
+const PER_LISTING = Number(process.env.PER_LISTING || 5000);      // 5000 per listing
 const KEEP_IN_INV = Number(process.env.KEEP_IN_INV || 5000); // sisanya simpan di bank
   for (let iter = 0; ; iter++) {
     if (iter > 0) await sleep(3600 * 1000);
@@ -417,9 +424,10 @@ const KEEP_IN_INV = Number(process.env.KEEP_IN_INV || 5000); // sisanya simpan d
               // setelah cancel, baca ulang backpack — item canceled balik ke inv
               const me2 = await cli.me();
               const bp2 = me2.backpack || {};
-              const stock2 = (Number(bp2.stone)||0) + (Number(bp2.coal)||0);
-              if (stock2 < 5000) {
-                log(`${s.tag} stok ${stock2} <5000 — mining dulu`);
+              const stockS = (Number(bp2.stone)||0), stockC = (Number(bp2.coal)||0);
+              const needPerItem = LISTS_PER_ITEM * PER_LISTING; // 10000 per item
+              if (stockS < needPerItem || stockC < needPerItem) {
+                log(`${s.tag} stok stone=${stockS} coal=${stockC} (butuh ${needPerItem}/item) — belum listing, mining dulu`);
                 await bankOverflow(cli, s.tag, ['stone','coal']); // jaga inv tetap ada ruang
               } else {
                 await autoSell(cli, s.tag, ['stone','coal'], SELL_THRESHOLD);
