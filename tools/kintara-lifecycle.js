@@ -333,23 +333,38 @@ async function autoSell(cli, tag, items = ['stone','coal'], totalTarget = Number
         const age = bal >= 1000 ? await kinsAgeDays(s.pk) : -1;
         log(`${s.tag} kins=${bal} age=${age.toFixed(1)}d`);
         if (bal < 1000) ineligible.push(`${s.tag} (${pubkeyOf(s.pk).slice(0,8)}… kins=${bal})`);
-        // FASE 4: umur >= 24 jam → auto-sell 10000 stone/coal
+        // FASE 4: umur >= 24 jam → siklus jual-mining
         if (bal >= 1000 && age >= 1.0) {
           try {
-            const cli = s.cli || await openClient(s);
-            await autoSell(cli, s.tag, ['stone','coal'], SELL_THRESHOLD);
-            // BALIK MINING: setelah listing, spawn lagi screen rock (terus-menerus)
+            const now = Date.now();
+            const lastList = s.lastListingAt || 0;
+            const hoursSince = (now - lastList) / 3600000;
+            // wajib: >= 3 jam sejak listing terakhir
+            if (lastList && hoursSince < 3) {
+              log(`${s.tag} baru listing ${hoursSince.toFixed(1)}j lalu — mining dulu (listing berikut ≥3j)`);
+            } else {
+              const cli = s.cli || await openClient(s);
+              const me = await cli.me();
+              const bp = me.backpack || {};
+              const stock = (Number(bp.stone)||0) + (Number(bp.coal)||0);
+              if (stock < 5000) {
+                log(`${s.tag} stok ${stock} <5000 — mining dulu`);
+              } else {
+                await autoSell(cli, s.tag, ['stone','coal'], SELL_THRESHOLD);
+                s.lastListingAt = Date.now();
+                log(`${s.tag} 🏷️ listing selesai — wajib mining 3 jam sebelum listing lagi`);
+              }
+            }
+            // pastikan mining rock jalan (apapun kondisi di atas, setelah listing / selama nunggu 3 jam)
             const { execSync } = require('child_process');
             const name = `lc-${s.tag}`;
             const alive = (() => { try { execSync(`screen -ls | grep -q ${name}`); return true; } catch { return false; } })();
             if (!alive) {
               const srv = FORCE_SERVER ? `KINTARA_FORCE_SERVER=${FORCE_SERVER} ` : '';
               execSync(`screen -dmS ${name} bash -c "${srv}KINTARA_NO_PHASE2=1 node ${ROOT}/tools/headless-runner.js '${s.pk}' rock >> ${ROOT}/recon/multi/${name}.out 2>&1"`);
-              log(`${s.tag} 🔄 balik mining rock setelah listing (screen ${name})`);
-            } else {
-              log(`${s.tag} screen ${name} udah jalan — mining lanjut`);
+              log(`${s.tag} ⛏️ mining rock jalan (screen ${name})`);
             }
-          } catch(e) { log(`${s.tag} autosell err: ${e.message.slice(0,60)}`); }
+          } catch(e) { log(`${s.tag} fase4 err: ${e.message.slice(0,60)}`); }
         }
       } catch(e) { log(`${s.tag} kins check err: ${e.message.slice(0,60)}`); }
       await sleep(1500);
