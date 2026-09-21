@@ -1,0 +1,352 @@
+#!/usr/bin/env node
+/**
+ * kintara-lifecycle.js — end-to-end akun kintara dari .env multi-wallet
+ *
+ * ENV (.env, format):
+ *   WALLETS=pk1
+ * pk2
+ * pk3            (multi-line, 1 pk per baris — parser baca block WALLETS= sampai baris kosong/EOF)
+ *   --atau--
+ *   WALLETS=pk1,pk2,pk3   (comma)
+ *   REPORT_TG_TOKEN= / REPORT_TG_CHAT=   (opsional — lapor fase 3 ke Telegram)
+ *   KINTARA_FORCE_SERVER= / KINTARA_ZONE= (opsional)
+ *   SELL_THRESHOLD=10000  (stone/coal per akun sebelum auto-sell)
+ *   SELL_USD=0.01         (harga listing token USD)
+ *
+ * FASE:
+ *   1) tutorial + outfit random + semua skill ke lv 5 (sequential 1 akun 1 waktu)
+ *   2) rock mining (stone&coal) semua akun, mining cap lv 10
+ *   3) seleksi: wallet pegang >=1000 $KINS? lanjut mining; tidak → lapor TG daftar ineligible
+ *   4) cek umur KINS (transfer pertama >=24 jam) + auto-sell 10000 stone/coal per akun di market (floor)
+ */
+'use strict';
+const path = require('path');
+const fs = require('fs');
+const { KintaraClient } = require('../lib/kintaraClient');
+const loops = require('./farm-loops');
+const bank = require('../lib/bank');
+
+// ---------- .env loader (root repo) ----------
+const ROOT = path.join(__dirname, '..');
+const ENV_FILE = path.join(ROOT, '.env');
+function loadEnv() {
+  if (!fs.existsSync(ENV_FILE)) return;
+  const lines = fs.readFileSync(ENV_FILE, 'utf8').split('\n');
+  // multi-line WALLETS block
+  let inWallets = false; const walletLines = [];
+  for (const raw of lines) {
+    const line = raw.replace(/\r$/, '');
+    if (line.startsWith('WALLETS=')) {
+      const v = line.slice(8).trim();
+      if (v) walletLines.push(v); // inline comma or first pk
+      inWallets = true; continue;
+    }
+    if (inWallets) {
+      if (/^[A-Z_0-9]+=/.test(line)) { inWallets = false; } // next var — block selesai
+      else if (line.trim()) walletLines.push(line.trim());
+      continue;
+    }
+    const m = line.match(/^([A-Z_0-9]+)=(.*)$/);
+    if (m && !(m[1] in process.env)) process.env[m[1]] = m[2].trim();
+  }
+  if (walletLines.length) {
+    const pks = walletLines.join(',').split(',').map(s => s.trim()).filter(Boolean);
+    process.env.WALLET_LIST = pks.join(',');
+  }
+}
+loadEnv();
+
+// ---------- utils ----------
+const log = (m) => console.log(`[${new Date().toLocaleTimeString()}] ${m}`);
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const rnd = (a,b) => a + Math.floor(Math.random()*(b-a));
+
+function getPks() {
+  let v = process.env.WALLET_LIST || process.env.WALLETS || '';
+  if (!v.trim()) { log('TIDAK ADA WALLET di .env (WALLETS=) — keluar'); process.exit(1); }
+  return v.split(',').map(s=>s.trim()).filter(Boolean);
+}
+
+const TG_TOKEN = process.env.REPORT_TG_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '';
+const TG_CHAT = process.env.REPORT_TG_CHAT || process.env.TELEGRAM_CHAT_ID || '';
+function report(text) {
+  if (!TG_TOKEN || !TG_CHAT) { log('[tg] (skip, no token) ' + text.split('\n')[0]); return; }
+  return fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ chat_id: TG_CHAT, text, parse_mode:'HTML' })
+  }).catch(e=>log('tg err: '+e.message));
+}
+
+// ---------- Solana RPC helpers ----------
+const RPC = process.env.SOLANA_RPC || 'https://api.mainnet-beta.solana.com';
+const KINS_MINT = process.env.KINS_MINT || 'Tqj8yFmagrg7oorpQkVGYR52r96RFTamvWfth9bpump';
+const bs58m = require('bs58'); const bs58 = bs58m.default || bs58m;
+const nacl = require('tweetnacl');
+async function rpc(method, params, retry = 4) {
+  for (let i = 0; i < retry; i++) {
+    try {
+      const r = await fetch(RPC, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({jsonrpc:'2.0',id:1,method,params}) });
+      if (r.status === 429) { await sleep(6000); continue; }
+      return await r.json();
+    } catch (e) { if (i === retry-1) throw e; await sleep(3000); }
+  }
+}
+function pubkeyOf(pk) { return bs58.encode(nacl.sign.keyPair.fromSecretKey(bs58.decode(pk)).publicKey); }
+async function kinsBalance(pk) {
+  const owner = pubkeyOf(pk);
+  const r = await rpc('getTokenAccountsByOwner', [owner, {mint: KINS_MINT}, {encoding:'jsonParsed'}]);
+  const accs = (r.result && r.result.value) || [];
+  let raw = 0; for (const a of accs) raw += Number(a.account.data.parsed.info.tokenAmount.amount);
+  return raw / 1e6;
+}
+async function kinsAgeDays(pk) {
+  const owner = pubkeyOf(pk);
+  const r = await rpc('getTokenAccountsByOwner', [owner, {mint: KINS_MINT}, {encoding:'jsonParsed'}]);
+  const accs = (r.result && r.result.value) || [];
+  if (!accs.length) return -1;
+  const s = await rpc('getSignaturesForAddress', [accs[0].pubkey, {limit: 1000}]);
+  const sigs = (s.result || []).filter(x => x.blockTime);
+  if (!sigs.length) return -1;
+  const first = sigs[sigs.length-1].blockTime;
+  return (Date.now()/1000 - first) / 86400;
+}
+
+// ---------- makeCtx (copy dari headless-runner — helper wajib) ----------
+function makeCtx(name) {
+  return {
+    name, bump(k){ this[k] = (this[k]||0)+1; }, get(k){ return this[k]||0; },
+    stop(){ return false; }, onEvent: (m)=>log(`[${name}] ${m}`), onImportant: (m)=>log(`[${name}!] ${m}`),
+    _lastBeat: Date.now(),
+  };
+}
+
+// ---------- outfit random ----------
+async function applyRandomOutfit(cli) {
+  try {
+    const me = await cli.me();
+    if (me.outfit && me.outfit.hat != null) { log('outfit sudah ada — skip'); return; }
+    const rnd=(n)=>Math.floor(Math.random()*n), hex=()=>rnd(0xffffff);
+    const outfit = { outfitSchema:15, hat:rnd(6), top:rnd(8), pants:rnd(6), shoe:rnd(5),
+      hatC:hex(), topC:hex(), pantsC:hex(), shoeC:hex(), strapC:hex(), skinTone:1+rnd(6),
+      aura:null,cape:null,eyeFx:null,hatFx:null,wings:null,topFx:null,shoeFx:null,glasses:null,
+      faceMask:null,handProp:null,torsoDecal:null,pantsPattern:null,shoeCosmetic:null };
+    const r = await cli.saveOutfit({ outfit });
+    const me2 = await cli.me(); // VERIFY — jangan percaya ok saja
+    if (me2.outfit && me2.outfit.hat != null) log(`🎨 outfit terpasang (hat=${outfit.hat} top=${outfit.top})`);
+    else log('⚠️ outfit save ok tapi me.outfit kosong — retry sekali');
+  } catch (e) { log('outfit gagal: ' + e.message); }
+}
+
+// ---------- fase 1 ----------
+const SKILLS = ['combat','woodcutting','mining','fishing','cooking'];
+async function levelStats(cli) {
+  const st = await cli.playerStats(cli.player.id).catch(()=>null);
+  return st && st.skillXp ? st : null;
+}
+const { levelFromTotalXp } = require('../lib/skillXp');
+async function allAt5(cli) {
+  const st = await levelStats(cli); if (!st || !st.skillXp) return false;
+  return SKILLS.every(k => levelFromTotalXp(st.skillXp[k] || 0) >= 5); // semua skill benar2 lv 5
+}
+async function phase1(cli, tag) {
+  // tutorial
+  let tctx = makeCtx('tutorial'); tctx.cli = cli;
+  let t = await loops.runTutorial(tctx);
+  if (t && t.step != null && t.step >= 0 && t.step < 28) {
+    await sleep(5000); await loops.runTutorial(tctx).catch(()=>{});
+  } else log(`[${tag}] tutorial tuntas`);
+  await applyRandomOutfit(cli);
+  // push skills ke 5 — sequential per skill via loops (prio: combat, wood, mining, fishing, cooking terakhir)
+  let guard = 0;
+  while (!(await allAt5(cli)) && guard++ < 40) {
+    for (const mode of ['combat','wood','rock','fish','cook']) {
+      const fn = { combat:()=>loops.runCombat(makeCtx2(mode,cli),{dragon:false}), wood:()=>loops.runWood(makeCtx2(mode,cli)), rock:()=>loops.runRock(makeCtx2(mode,cli)), fish:()=>loops.runFish(makeCtx2(mode,cli)), cook:()=>loops.runCook(makeCtx2(mode,cli)) };
+      try { await fn[mode](); } catch(e) { log(`[${tag}] ${mode} err: ${e.message.slice(0,60)}`); }
+      if (await allAt5(cli)) break;
+    }
+  }
+  log(`[${tag}] FASE 1 ${await allAt5(cli) ? 'SELESAI ✅' : 'belum (guard) '}`);
+}
+function makeCtx2(name, cli) { const c = makeCtx(name); c.cli = cli; c.capLevel = 5; return c; }
+
+// ---------- fase 2: rock mining, cap lv 10 ----------
+async function phase2(cli, tag) {
+  for (let i=1;;i++) {
+    const ctx = makeCtx('rock'); ctx.cli = cli; ctx.capLevel = 10; // mining cap lv 10 (free user)
+    ctx.autoBankMin = Number(process.env.SELL_THRESHOLD || 10000);
+    log(`[${tag}] rock sesi ${i}`);
+    try { await loops.runRock(ctx); } catch(e) { log(`[${tag}] rock err: ${e.message.slice(0,60)}`); }
+    await sleep(10000);
+    try { await cli.ensureLogin(); } catch {}
+  }
+}
+
+// ---------- fase 4: auto-sell ----------
+async function autoSell(cli, tag, items = ['stone','coal'], totalTarget = Number(process.env.SELL_THRESHOLD||10000)) {
+  const p = await loops.connectPresence(cli, (m)=>log(`[${tag}] ${m}`)).catch(e=>{ throw new Error('presence: '+e.message); });
+  try {
+    await sleep(2500);
+    await p.walkTo(bank.BANK_WORLD.x, bank.BANK_WORLD.z, { maxSec: 60 }).catch(()=>{});
+    // hitung listing aktif — max 5
+    const mine = await cli.marketplaceListings({ mine:true, limit: 50 });
+    let active = (mine.listings || []).length;
+    const MAX_LISTINGS = 5, MAX_PER_LISTING = 5000;
+    let remainingSlots = Math.max(0, MAX_LISTINGS - active);
+    if (!remainingSlots) { log(`[${tag}] listing penuh (${active}/5) — skip sell`); return; }
+    const me = await cli.me(); const bp = me.backpack || {};
+    const inv = bp.invSlots || [];
+    let totalListed = 0;
+    for (const itemType of items) {
+      if (remainingSlots <= 0) break;
+      let qtyTotal = Number(bp[itemType]) || 0;
+      if (qtyTotal < 1000) continue; // jangan kecil-kecilan
+      const stats = await cli.marketplaceStats(itemType);
+      let left = Math.min(qtyTotal, Math.max(0, totalTarget - totalListed));
+      while (left >= 1000 && remainingSlots > 0) {
+        const chunk = Math.min(MAX_PER_LISTING, left); // max 5000/listing
+        // slot index diambil fresh tiap listing (backpack berubah setelah listing)
+        const meNow = await cli.me();
+        const invNow = (meNow.backpack || {}).invSlots || [];
+        const idx = invNow.findIndex(s => s && s.t === itemType && (Number(s.n)||0) >= Math.min(chunk, 100));
+        if (idx < 0) { log(`[${tag}] slot ${itemType} tidak cukup untuk chunk ${chunk}`); break; }
+        const priceUsd = Math.max(0.01, (stats.floorToken || 0.000029) * chunk);
+        try {
+          const r = await cli.marketplaceSell({ itemType, slotKind:'inv', slotIndex:idx, quantity:chunk, currency:'token', priceUsd:Number(priceUsd.toFixed(2)), fleet:'', shardId:'' });
+          if (r && r.ok !== false) {
+            log(`[${tag}] 🏷️ listed ${chunk} ${itemType} @ ${priceUsd.toFixed(2)} USD (${remainingSlots-1} slot sisa)`);
+            totalListed += chunk; remainingSlots--; left -= chunk;
+          } else { log(`[${tag}] listing ${itemType} ditolak: ${JSON.stringify(r).slice(0,80)}`); break; }
+        } catch(e) { log(`[${tag}] sell ${itemType} err: ${e.message.slice(0,80)}`); break; }
+        await sleep(rnd(2000, 4000)); // humanlike antar listing
+      }
+    }
+  } finally {
+    try { p.close(); } catch {}
+  }
+}
+
+// ---------- orchestrator ----------
+(async () => {
+  const pks = getPks();
+  log(`BOOT lifecycle — ${pks.length} wallet`);
+  const state = pks.map((pk,i) => ({ idx:i, pk, tag:'w'+(i+1), cli:null, phase:1 }));
+  const FORCE_SERVER = process.env.KINTARA_FORCE_SERVER || '';
+
+  const openClient = async (s, retries = 20) => {
+    for (let a = 1; a <= retries; a++) {
+      try {
+        const { client } = await KintaraClient.create({ privateKey: s.pk, forceLogin: true });
+        s.cli = client; return client;
+      } catch (e) {
+        if (/registration_blocked|rate_limited|502|challenge/i.test(e.message) && a < retries) {
+          log(`${s.tag} login ditahan server (${e.message.slice(0,50)}) — retry ${a}/${retries} dalam 60 dtk`);
+          await sleep(60000);
+          continue;
+        }
+        throw e;
+      }
+    }
+    throw new Error('login gagal terus');
+  };
+
+  // DETEKSI FASE AWAL per wallet — skip fase yang udah beres:
+  // semua skill >=5? skip F1 → avg>=10? skip F2 → KINS>=1000 & umur>=24h? skip F3 → langsung F4 (autosell)
+  for (const s of state) {
+    try {
+      const cli = await openClient(s);
+      log(`${s.tag} login ok player=${cli.player && cli.player.id}`);
+      const st = await levelStats(cli);
+      const all5 = st && st.skillXp && SKILLS.every(k => levelFromTotalXp(st.skillXp[k]||0) >= 5);
+      if (!all5) { s.phase = 1; log(`${s.tag} → mulai FASE 1`); continue; }
+      log(`${s.tag} semua skill ≥5 — SKIP FASE 1`);
+      const avg = st.avg || 0;
+      if (avg < 10) { s.phase = 2; log(`${s.tag} avg=${avg.toFixed(1)} <10 → mulai FASE 2 (rock)`); continue; }
+      log(`${s.tag} avg=${avg.toFixed(1)} ≥10 — SKIP FASE 2`);
+      const bal = await kinsBalance(s.pk);
+      if (bal < 1000) { s.phase = 3; s.kins = bal; log(`${s.tag} kins=${bal} <1000 → tunggu FASE 3`); continue; }
+      const age = await kinsAgeDays(s.pk);
+      if (age < 1.0) { s.phase = 3; s.kins = bal; s.kinsAge = age; log(`${s.tag} kins=${bal} umur ${age.toFixed(1)}h <24jam → tunggu FASE 3/4`); continue; }
+      s.phase = 4; s.kins = bal; s.kinsAge = age;
+      log(`${s.tag} kins=${bal} umur ${age.toFixed(1)}d — LANGSUNG FASE 4 (autosell)`);
+    } catch(e) { log(`${s.tag} deteksi gagal: ${e.message.slice(0,80)}`); }
+    await sleep(rnd(15000, 30000));
+  }
+
+  // FASE 1 — sequential 1 akun 1 waktu (hanya yang phase=1)
+  for (const s of state.filter(x => x.phase === 1)) {
+    log(`=== ${s.tag} FASE 1 ===`);
+    try {
+      if (!s.cli) s.cli = await openClient(s);
+      await phase1(s.cli, s.tag);
+      s.phase = 2;
+    } catch(e) { log(`${s.tag} fase1 gagal: ${e.message.slice(0,80)}`); }
+    await sleep(rnd(15000, 30000)); // stagger anti rate-limit
+  }
+
+  // FASE 2 — rock mining sampai AVG >= 10 (bukan mining lv10).
+  // Semua skill lv5 → mining rock terus; berhenti hanya saat rata-rata semua skill capai 10.
+  const { execSync, spawn } = require('child_process');
+  const avgOf = async (cli) => {
+    const st = await cli.playerStats(cli.player.id).catch(()=>null);
+    return st ? (st.avg || 0) : 0;
+  };
+  // buat sesi mining berkelanjutan per wallet — hanya yang phase=2 (belum avg 10)
+  for (const s of state) {
+    if (s.phase !== 2) continue;
+    const name = `lc-${s.tag}`;
+    try { execSync(`screen -S ${name} -X quit 2>/dev/null`); } catch {}
+    const srv = FORCE_SERVER ? `KINTARA_FORCE_SERVER=${FORCE_SERVER} ` : '';
+    execSync(`screen -dmS ${name} bash -c "${srv}node ${ROOT}/tools/headless-runner.js '${s.pk}' rock >> ${ROOT}/recon/multi/${name}.out 2>&1"`);
+    log(`${s.tag} → screen ${name} (fase 2 rock — lanjut sampai avg≥10)`);
+    await sleep(20000);
+  }
+  // monitor avg: cek tiap 15 menit; avg>=10 → stop mining akun itu (screen quit)
+  for (;;) {
+    await sleep(15 * 60 * 1000);
+    for (const s of state) {
+      if (!s.cli || s.phase >= 3) continue;
+      try {
+        const avg = await avgOf(s.cli);
+        if (avg >= 10) {
+          try { execSync(`screen -S lc-${s.tag} -X quit 2>/dev/null`); } catch {}
+          s.phase = 3;
+          log(`${s.tag} avg=${avg.toFixed(1)} ≥ 10 — FASE 2 selesai, masuk seleksi FASE 3`);
+        } else {
+          log(`${s.tag} avg=${avg.toFixed(1)} < 10 — mining rock lanjut`);
+        }
+      } catch(e) { log(`${s.tag} avg check err: ${e.message.slice(0,60)}`); }
+      await sleep(1500);
+    }
+    // begitu semua fase 2 selesai → keluar dari monitor ke fase 3
+    if (state.every(s => s.phase >= 3)) break;
+  }
+
+  // FASE 3 — seleksi KINS (loop jam-jaman; iterasi pertama langsung jalan)
+  const SELL_THRESHOLD = Number(process.env.SELL_THRESHOLD || 10000);
+  for (let iter = 0; ; iter++) {
+    if (iter > 0) await sleep(3600 * 1000);
+    log('=== FASE 3 cek KINS ===');
+    const ineligible = [];
+    for (const s of state) {
+      try {
+        const bal = await kinsBalance(s.pk);
+        const age = bal >= 1000 ? await kinsAgeDays(s.pk) : -1;
+        log(`${s.tag} kins=${bal} age=${age.toFixed(1)}d`);
+        if (bal < 1000) ineligible.push(`${s.tag} (${pubkeyOf(s.pk).slice(0,8)}… kins=${bal})`);
+        // FASE 4: umur >= 24 jam → auto-sell 10000 stone/coal
+        if (bal >= 1000 && age >= 1.0) {
+          try {
+            const cli = s.cli || await openClient(s);
+            await autoSell(cli, s.tag, ['stone','coal'], SELL_THRESHOLD);
+          } catch(e) { log(`${s.tag} autosell err: ${e.message.slice(0,60)}`); }
+        }
+      } catch(e) { log(`${s.tag} kins check err: ${e.message.slice(0,60)}`); }
+      await sleep(1500);
+    }
+    if (ineligible.length) {
+      await report(`⚠️ <b>WALLET TIDAK ELIGIBLE</b> (tidak punya 1000 KINS):\n${ineligible.join('\n')}\n\nMining rock dilanjutkan untuk eligible.`);
+    } else {
+      await report('✅ Semua wallet eligible (1000 KINS) — mining lanjut.');
+    }
+  }
+})().catch(e => { log('FATAL ' + e.message); process.exit(1); });
