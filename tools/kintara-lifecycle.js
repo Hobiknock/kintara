@@ -156,10 +156,14 @@ async function phase1(cli, tag) {
     await sleep(5000); await loops.runTutorial(tctx).catch(()=>{});
   } else log(`[${tag}] tutorial tuntas`);
   await applyRandomOutfit(cli);
-  // push skills ke 5 — sequential per skill via loops (prio: combat, wood, mining, fishing, cooking terakhir)
+  // push skills ke 5 — URUTAN ACAK per akun (mulai random: bisa mining dulu, wood, combat, dll)
+  const order = ['combat','wood','rock','fish','cook'];
+  const start = Math.floor(Math.random() * order.length);
+  const rotated = [...order.slice(start), ...order.slice(0, start)];
+  log(`[${tag}] 🔀 urutan push acak: ${rotated.join(' → ')}`);
   let guard = 0;
   while (!(await allAt5(cli)) && guard++ < 40) {
-    for (const mode of ['combat','wood','rock','fish','cook']) {
+    for (const mode of rotated) {
       const fn = { combat:()=>loops.runCombat(makeCtx2(mode,cli),{dragon:false}), wood:()=>loops.runWood(makeCtx2(mode,cli)), rock:()=>loops.runRock(makeCtx2(mode,cli)), fish:()=>loops.runFish(makeCtx2(mode,cli)), cook:()=>loops.runCook(makeCtx2(mode,cli)) };
       try { await fn[mode](); } catch(e) { log(`[${tag}] ${mode} err: ${e.message.slice(0,60)}`); }
       if (await allAt5(cli)) break;
@@ -291,13 +295,18 @@ async function autoSell(cli, tag, items = ['stone','coal'], totalTarget = Number
     return st ? (st.avg || 0) : 0;
   };
   // buat sesi mining berkelanjutan per wallet — hanya yang phase=2 (belum avg 10)
+  // SEBAR ke berbagai server: round-robin 12-16 asia
+  const SERVERS = (process.env.KINTARA_SERVERS || '12,13,14,15,16').split(',').map(n=>n.trim()).filter(Boolean);
+  let srvIdx = 0;
   for (const s of state) {
     if (s.phase !== 2) continue;
     const name = `lc-${s.tag}`;
+    const srv = FORCE_SERVER || SERVERS[srvIdx % SERVERS.length];
+    srvIdx++;
     try { execSync(`screen -S ${name} -X quit 2>/dev/null`); } catch {}
-    const srv = FORCE_SERVER ? `KINTARA_FORCE_SERVER=${FORCE_SERVER} ` : '';
-    execSync(`screen -dmS ${name} bash -c "${srv}node ${ROOT}/tools/headless-runner.js '${s.pk}' rock >> ${ROOT}/recon/multi/${name}.out 2>&1"`);
-    log(`${s.tag} → screen ${name} (fase 2 rock — lanjut sampai avg≥10)`);
+    const envSrv = `KINTARA_FORCE_SERVER=${srv} `;
+    execSync(`screen -dmS ${name} bash -c "${envSrv}KINTARA_NO_PHASE2=1 node ${ROOT}/tools/headless-runner.js '${s.pk}' rock >> ${ROOT}/recon/multi/${name}.out 2>&1"`);
+    log(`${s.tag} → screen ${name} (fase 2 rock @ server ${srv} — lanjut sampai avg≥10)`);
     await sleep(20000);
   }
   // monitor avg: cek tiap 15 menit; avg>=10 → stop mining akun itu (screen quit)
