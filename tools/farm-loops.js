@@ -13,11 +13,38 @@ const WebSocket = require('ws');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // ---- SPEED FACTOR (jeda client saja — timer protokol server TIDAK disentuh) ----
 // 1.0 = pace asli. 1.5 = jeda client dipotong ~33%. KINTARA_SPEED di .env utk override.
-const SPEED = Math.max(1, Math.min(3, Number(process.env.KINTARA_SPEED || 1.5)));
+const SPEED = Math.max(1, Math.min(3, Number(process.env.KINTARA_SPEED || 2.5)));
 const ssleep = (ms) => sleep(Math.max(60, Math.round(ms / SPEED)));
 const rnd = (a, b) => a + Math.random() * (b - a);
 
 // ============ INFRA (kintara.com baru — auto shard) ============
+// ===== PICK HEALTHY SHARD (port dari kintara-bot orchestrator pickShard) =====
+// Ambil /api/servers → sort by full + queueLength → cek gate-check → balikin shard paling sehat.
+// Dipakai: failover cepat pas server wallet-nya error/steril (bukan cuma scan node).
+const _shardCache = { ts: 0, shard: null };
+async function pickHealthyShard(cli, onEvent, { skipShards = [] } = {}) {
+  if (Date.now() - _shardCache.ts < 120000 && _shardCache.shard && !skipShards.includes(_shardCache.shard)) return _shardCache.shard;
+  try {
+    const r = await cli.servers();
+    const list = (r && Array.isArray(r.servers)) ? r.servers.filter((x) => x && x.id != null) : [];
+    const ranked = list.sort((a, b) => {
+      const af = !!a.full, bf = !!b.full;
+      if (af !== bf) return af ? 1 : -1; // yang nggak full dulu
+      return (Number(a.queueLength) || 0) - (Number(b.queueLength) || 0);
+    });
+    for (const sv of ranked) {
+      const shard = 's' + (sv.routeShardId || sv.id);
+      if (skipShards.includes(shard)) continue;
+      let gate = null;
+      try { const g = await cli.get(`/api/auth/gate-check?shard=${Number(sv.id) | 0}`); gate = g && g.gate === 'ok'; }
+      catch (e) { gate = (e && e.status === 403) ? false : null; }
+      if (gate === true) { _shardCache.ts = Date.now(); _shardCache.shard = shard; return shard; }
+    }
+    if (ranked[0]) { const sh = 's' + (ranked[0].routeShardId || ranked[0].id); _shardCache.ts = Date.now(); _shardCache.shard = sh; return sh; }
+  } catch (e) { onEvent && onEvent(`pickHealthyShard err: ${e.message.slice(0, 40)}`); }
+  return null;
+}
+
 async function connectPresence(cli, onEvent, attempt = 0, forceShard = null) {
   try {
     const srv = await cli.resolveServer();
@@ -259,7 +286,18 @@ async function runRock(ctx) {
   const p = await connectPresence(cli, onEvent);
   watchLevelUps(p, ctx); // notif LEVEL UP ke chat
   try { p.equip('tool_pickaxe'); } catch {} // human-like: bawa pickaxe pas mining
-  if (zone === 'pond') {
+  // MODE WHISPERWOOD: mining rock (stone/coal) TAPI di peta Whisperwood (eldergrove)
+  if (zone === 'whisperwood') {
+    onEvent('🌲⛏️ mode ROCK di WHISPERWOOD — mining stone/coal di peta eldergrove...');
+    const EG_PORTAL = { x: 0.5, z: 30.5 };
+    const EG_SPAWN = { x: 0.5, z: -23.5 };
+    if (p.region !== 'world') { try { p.setRegion('world', 30.5, 0.5); await sleep(1600); } catch {} }
+    try { await p.walkTo(EG_PORTAL.x, EG_PORTAL.z, { maxSec: 45 }); } catch {}
+    if (p.region !== 'eldergrove') { try { p.setRegion('eldergrove', EG_SPAWN.x, EG_SPAWN.z); } catch {} }
+    for (let i = 0; i < 15 && p.region !== 'eldergrove'; i++) await ssleep(1000);
+    if (p.region !== 'eldergrove') { onEvent('⚠️ gagal masuk Whisperwood — fallback POND'); }
+    else onEvent('🌲 masuk Whisperwood ✓ — cari node rock...');
+  } else if (zone === 'pond') {
     // masuk pond dulu (pola runFish) — node pond rapat & respawn deras
     if (!(await gotoPond(p, onEvent))) {
       onEvent('⚠️ gagal masuk pond — fallback ke zona rock world');
@@ -298,6 +336,7 @@ async function runRock(ctx) {
 
   const dead = new Map(); // key -> ts blacklist
   let stone = 0, coal = 0, metal = 0, fails = 0, skips = 0;
+  let lastFelledAt = Date.now(); // hotfix stuck: ts terakhir sukses panen
   while (!stop()) {
     ctx._lastBeat = Date.now(); // heartbeat mining
     const OFF = tileOff(p.region); // offset live — region bisa berubah pas reconnect
@@ -341,7 +380,31 @@ async function runRock(ctx) {
             else { // gagal masuk zona target → tetap di zona lama, coba lagi nanti
               onEvent(`⚠️ gagal pindah ke ${target} — tetap di ${zone}`);
             }
-            let wn2 = 0; while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && wn2 < 15000) { await sleep(650); wn2 += 1000; }
+            let wn2 = 0; while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && wn2 < 5000) { await sleep(650); wn2 += 500; }
+            // HOTFIX hang: kalau setelah pindah zona masih tak ada node & presence mati → scan shard langsung
+            if (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && sterilityCount >= 1) {
+              onEvent('🛰️ node kosong pasca pindah zona — scan shard langsung...');
+              try { p.close(); } catch {}
+              try {
+                const scan = await Promise.race([
+                  scanShardsForRocks(cli, onEvent, undefined, stop),
+                  sleep(120000).then(() => null),
+                ]);
+                if (scan) {
+                  const best = scan.find((x) => x.live >= 3);
+                  onEvent(`🛰️ hasil scan: ${scan.map((x) => `${x.shard}=${x.live}`).join(', ')}`);
+                  if (best) {
+                    onEvent(`🛰️ pindah shard ${best.shard} (${best.live} node hidup)`);
+                    const pn = await Promise.race([connectPresence(cli, onEvent, 0, best.shard), sleep(30000).then(()=>null)]);
+                    if (pn) {
+                      Object.assign(p, pn);
+                      dead.clear(); emptyRotas = 0; skipStreak = 0; felledSinceMove = 0;
+                      if (p.region !== 'pond') { await gotoPond(p, onEvent).catch(()=>{}); }
+                    }
+                  }
+                }
+              } catch(e) { onEvent(`scan shard err: ${e.message.slice(0,50)}`); }
+            }
             // DUA ZONA STERIL BERUNTUN (pond habis, world habis) → SCAN SEMUA SHARD, reconnect ke yang paling deras
             if (sterilityCount % 2 === 0 && fails >= 40 && felledSinceMove === 0) {
               onEvent('🛰️ dua zona steril — scan shard buat node rock hidup...');
@@ -381,7 +444,7 @@ async function runRock(ctx) {
     if (Math.abs(p.pos.x - dstx) > 0.6 || Math.abs(p.pos.z - dstz) > 0.6) {
       await p.walkTo(dstx, dstz, { maxSec: Math.min(12, 2 + Math.hypot(p.pos.x - dstx, p.pos.z - dstz) / 2) }).catch(() => {});
     }
-    const res = await p.harvestNodeV2('rock', tgt.key, !!tgt.hasCoal, !!tgt.hasMetal, { maxSec: 8 });
+    const res = await p.harvestNodeV2('rock', tgt.key, !!tgt.hasCoal, !!tgt.hasMetal, { maxSec: 10 });
     if (res.felled) {
       const loot = res.loot || 'stone';
       const y = res.yield || NODE_YIELD; // v2026: amt dari server (random), fallback 6
@@ -389,6 +452,7 @@ async function runRock(ctx) {
       if (loot === 'stone') stone += y; else if (loot === 'coal') coal += y; else metal += y;
       ctx.bump('felled'); ctx.bump(loot === 'stone' ? 'stone' : loot === 'coal' ? 'coal' : 'metal');
       onEvent(`✅ rock felled loot=${loot} x${y} (stone+${stone} coal+${coal} metal+${metal})`);
+      lastFelledAt = Date.now(); // hotfix stuck: catat panen sukses
       dead.set(tgt.key, Date.now()); // node habis — tunggu respawn
       skipStreak = 0; felledSinceMove++; // panen sukses → reset streak, catat progres sejak rotasi
       await ssleep(rnd(200, 600)); // jeda antar node — dipangkas (client-only; protokol tetap)
@@ -407,6 +471,59 @@ async function runRock(ctx) {
     } else {
       fails++; dead.set(tgt.key, Date.now() + (p.region === 'pond' ? 150000 : 0)); // pond: blacklist 2.5 mnt (respawn lambat)
       if (fails % 10 === 1) onEvent(`⚠️ ${fails} node skip (gagal/depleted)`);
+      // HOTFIX stuck-harvest: node kelihatan tapi harvest gagal terus (harusnya respawn, server telat sync) →
+      // kalau >8 mnt tanpa 1 pun felled, jangan cuma blacklist-reset — scan shard & pindah ke yang deras.
+      // v2 (port kintara-bot): gateway error beruntun (502/404) ≥5 → failover INSTAN ke shard sehat.
+      if (Date.now() - lastFelledAt > 8 * 60000 && fails % 30 === 0) {
+        onEvent('🛰️ >8 mnt zero felled walau node ada — scan shard & pindah...');
+        try { p.close(); } catch {}
+        try {
+          const scan = await Promise.race([
+            scanShardsForRocks(cli, onEvent, undefined, stop),
+            sleep(150000).then(() => null),
+          ]);
+          if (scan && scan.length) {
+            onEvent(`🛰️ hasil scan: ${scan.map((x) => `${x.shard}=${x.live}`).join(', ')}`);
+            const best = scan.find((x) => x.live >= 3);
+            if (best) {
+              const pn = await Promise.race([connectPresence(cli, onEvent, 0, best.shard), sleep(30000).then(()=>null)]);
+              if (pn && String(pn.shard || '') === best.shard) {
+                Object.assign(p, pn);
+                onEvent(`🛰️ pindah shard ${best.shard} OK — lanjut panen`);
+              } else { onEvent(`🛰️ pindah shard ${best.shard} gagal — reconnect default`); }
+            } else {
+              onEvent('🛰️ semua shard kosong — breather 60 dtk');
+              for (let b = 0; b < 6 && !stop(); b++) await sleep(10000);
+            }
+          }
+        } catch (e) { onEvent(`scan shard err: ${e.message.slice(0, 50)}`); }
+        dead.clear(); fails = 0; lastFelledAt = Date.now(); // reset biar nggak loop trigger
+        if (p.region !== 'pond') { await gotoPond(p, onEvent).catch(() => {}); }
+        let wr = 0; while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && wr < 10000) { await sleep(650); wr += 1000; }
+        continue;
+      }
+      // FAILOVER CEPAT (kintara-bot style): ≥5 gateway error beruntun (502/404/403 di log) →
+      // pindah server INSTAN pakai pickHealthyShard — nggak nunggu retry backoff 60-75 dtk berkali-kali.
+      if (fails % 15 === 0 && fails >= 15) {
+        const gwErrs = (fails >= 15 && Date.now() - lastFelledAt > 5 * 60000) ? 'yes' : 'no';
+        if (gwErrs === 'yes') {
+          const skipCur = [String(p.shard || '')];
+          const sh = await pickHealthyShard(cli, onEvent, { skipShards: skipCur });
+          if (sh && sh !== String(p.shard || '')) {
+            onEvent(`♻️ failover cepat: server ${p.shard} bermasalah → pindah ${sh} (pickHealthyShard)...`);
+            try { p.close(); } catch {}
+            const pn = await Promise.race([connectPresence(cli, onEvent, 0, sh), sleep(30000).then(()=>null)]);
+            if (pn) {
+              Object.assign(p, pn);
+              dead.clear(); skipStreak = 0; felledSinceMove = 0;
+              if (p.region !== 'pond') { await gotoPond(p, onEvent).catch(() => {}); }
+              let wf = 0; while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && wf < 8000) { await sleep(650); wf += 1000; }
+              continue;
+            }
+          } else { onEvent('♻️ failover: server sehat nggak ketemu — tetap di sini, reset fail counter'); }
+          fails = 0;
+        }
+      }
     }
     if (!p.ready) { onEvent('🔌 reconnect...'); try { p.close(); } catch {}
       const pn = await connectPresence(cli, onEvent); Object.assign(p, pn);
@@ -421,22 +538,41 @@ async function runRock(ctx) {
 // ============ /wood — panen wood ============
 async function runWood(ctx) {
   const { cli, stop, onEvent } = ctx;
-  // zone: 'pond' (DEFAULT — di pond banyak wood, respawn deras, pola runRock terbukti) | 'world' (cluster tree lama)
+  // zone: 'pond' (DEFAULT — di pond banyak wood, respawn deras, pola runRock terbukit terbukti) | 'world' (cluster tree lama) | 'whisperwood' (peta eldergrove/Whisperwood)
   let zone = ctx.zone || 'pond';
-  onEvent(`🪓 Mulai panen wood${zone === 'pond' ? ' di POND 🎣' : ''}...`);
+  if (zone === 'whisperwood') onEvent('🌲 mode WHISPERWOOD — farming wood di eldergrove...');
+  else onEvent(`🪓 Mulai panen wood${zone === 'pond' ? ' di POND 🎣' : ''}...`);
   const p = await connectPresence(cli, onEvent);
   watchLevelUps(p, ctx); // notif LEVEL UP ke chat
   try { p.equip('tool_axe'); } catch {} // human-like: bawa axe pas chopping
   const dead = new Map(); // key -> ts blacklist
   let wood = 0, fails = 0;
   const targetWood = ctx.targetWood || 0; // refill potion: auto-berhenti saat bahan cukup (jgn jalan selamanya)
-  // Waypoint rotasi: POND = world-coord (persis runRock) | WORLD = tile cluster tree (col 3-8 row 19-26)
+  // Waypoint rotasi: POND = world-coord (persis runRock) | WORLD = tile cluster tree (col 3-8 row 19-26) | WHISPERWOOD = eldergrove grid
   const POND_WP = [[4,-2],[8,0],[12,4],[6,8],[0,10],[-6,8],[-10,4],[-8,0],[-4,-2],[2,-4],[8,-6],[14,2]];
   const TREE_WP = [[4, 20], [7, 20], [8, 23], [6, 25], [3, 25], [5, 22]];
+  const WHISPER_WP = [[24,4],[27,6],[29,9],[26,12],[23,14],[21,10],[24,7],[28,13],[22,5],[26,15],[25,8],[29,11]]; // grid eldergrove (col 21-29, row 4-15)
+  const WPS = () => zone === 'whisperwood' ? WHISPER_WP : (zone === 'world' ? TREE_WP : POND_WP);
   let wpIdx = 0, emptyTicks = 0, lastEmptyLog = 0, felledSinceMove = 0;
   const hb = ctx.parent || ctx; // refill manual bikin sub-ctx — heartbeat harus balik ke ctx asli (watchdog)
   const waitNodes = async (ms) => { let w = 0; while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'tree')) && w < ms) { await sleep(650); w += 1000; } };
   const gotoZone = async () => {
+    if (zone === 'whisperwood') {
+      // masuk eldergrove (Whisperwood): portal world col31,row61 → setRegion eldergrove spawn (0.5,-23.5)
+      const EG_PORTAL = { x: 0.5, z: 30.5 };
+      const EG_SPAWN = { x: 0.5, z: -23.5 };
+      if (p.region !== 'world') { try { p.setRegion('world', 30.5, 0.5); await sleep(1600); } catch {} }
+      try { await p.walkTo(EG_PORTAL.x, EG_PORTAL.z, { maxSec: 45 }); } catch {}
+      if (p.region !== 'eldergrove') { try { p.setRegion('eldergrove', EG_SPAWN.x, EG_SPAWN.z); } catch {} }
+      for (let i = 0; i < 15 && p.region !== 'eldergrove'; i++) await ssleep(1000);
+      if (p.region !== 'eldergrove') { onEvent('⚠️ gagal masuk Whisperwood — fallback POND'); zone = 'pond'; return; }
+      onEvent('🌲 masuk Whisperwood ✓');
+      // geser ke tengah grid waypoint (col 25, row 9 → world coord)
+      const off = tileOff('eldergrove');
+      await p.walkTo(25 + off, 9 + off, { maxSec: 30 }).catch(() => {});
+      await waitNodes(12000);
+      return;
+    }
     if (zone === 'pond') {
       if (p.region !== 'world' && p.region !== 'pond') await gotoResourceZone(p, onEvent, 60, 'rock'); // dari wild/eldergrove: pulang dulu
       if (!(await gotoPond(p, onEvent))) {
@@ -457,10 +593,11 @@ async function runWood(ctx) {
       if (Date.now() - lastEmptyLog > 60000) { lastEmptyLog = Date.now(); onEvent(`⏳ 0 node tree di ${zone === 'pond' ? 'POND' : 'world'} (${known} terlihat — respawn/rotasi)...`); }
       await ssleep(rnd(1200, 2000));
       emptyTicks++;
-      const WP = zone === 'pond' ? POND_WP : TREE_WP;
-      // STERIL: >1 putaran waypoint penuh tanpa 1 pun felled → PINDAH ZONA (pond ↔ world)
+      const WP = WPS();
+      // STERIL: >1 putaran waypoint penuh tanpa 1 pun felled → pindah zona (whisperwood tetap di whisperwood — rotasi waypoint aja)
       if (emptyTicks >= (WP.length + 1) * 8 && felledSinceMove === 0) {
         emptyTicks = 0; dead.clear(); felledSinceMove = 0;
+        if (zone === 'whisperwood') { onEvent('🧭 Whisperwood steril — rotasi ulang grid...'); await gotoZone(); continue; }
         const target = zone === 'pond' ? 'world' : 'pond';
         onEvent(`🧭 area ${zone === 'pond' ? 'POND' : 'cluster tree WORLD'} steril — pindah ke ${target === 'pond' ? 'POND 🎣' : 'cluster tree WORLD'}...`);
         zone = target;
@@ -469,12 +606,13 @@ async function runWood(ctx) {
       }
       if (emptyTicks % 8 === 0) { // tiap 8 tick kosong → geser waypoint
         felledSinceMove = 0;
+        if (zone === 'whisperwood' && p.region !== 'eldergrove') { await gotoZone(); continue; }
         if (zone === 'pond' && p.region !== 'pond') { await gotoPond(p, onEvent); await waitNodes(8000); continue; }
         if (zone === 'world' && p.region !== 'world') { await gotoResourceZone(p, onEvent, 60, 'tree'); await waitNodes(8000); continue; }
         const wp = WP[wpIdx % WP.length]; wpIdx++;
-        onEvent(`🔄 area ${zone === 'pond' ? 'pond' : 'cluster tree'} kosong — geser ke ${wp[0]},${wp[1]}...`);
-        if (zone === 'pond') await p.walkTo(wp[0], wp[1], { maxSec: 20 }).catch(() => {}); // POND_WP world-coord (pola runRock)
-        else { const off = tileOff(p.region); await p.walkTo(wp[0] + off, wp[1] + off, { maxSec: 20 }).catch(() => {}); }
+        onEvent(`🔄 area kosong — geser ke ${wp[0]},${wp[1]}...`);
+        const off0 = tileOff(p.region);
+        await p.walkTo(wp[0] + off0, wp[1] + off0, { maxSec: 20 }).catch(() => {});
         await ssleep(900);
         await waitNodes(8000);
         if (dead.size) dead.clear(); // blacklist gak boleh ikut ke titik baru

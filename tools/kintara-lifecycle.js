@@ -77,6 +77,11 @@ function report(text) {
   }).catch(e=>log('tg err: '+e.message));
 }
 
+let srv4 = 0;
+const LISTS_PER_ITEM = Number(process.env.LISTS_PER_ITEM || 1);
+const PER_LISTING = Number(process.env.PER_LISTING || 5000);
+const KEEP_IN_INV = Number(process.env.KEEP_IN_INV || 5000);
+
 // ---------- Solana RPC helpers ----------
 const RPC = process.env.SOLANA_RPC || 'https://api.mainnet-beta.solana.com';
 const KINS_MINT = process.env.KINS_MINT || 'Tqj8yFmagrg7oorpQkVGYR52r96RFTamvWfth9bpump';
@@ -201,7 +206,7 @@ async function autoSell(cli, tag, items = ['stone','coal'], totalTarget = Number
       try {
         const meB = await cli.me(); const bpB = meB.backpack || {};
         const over = (Number(bpB.stone)||0) + (Number(bpB.coal)||0) - KEEP_IN_INV;
-        if (over > 1000) {
+        if (false && over > 1000) {
           // harus ada presence utk walk ke bank — reuse sesi p yang udah nyambung
           await p.walkTo(bank.BANK_WORLD.x, bank.BANK_WORLD.z, { maxSec: 60 }).catch(()=>{});
           const r = await bank.depositAll(cli, ['stone','coal']);
@@ -219,7 +224,7 @@ async function autoSell(cli, tag, items = ['stone','coal'], totalTarget = Number
         try {
           const meB = await cli.me(); const bpB = meB.backpack || {};
           const overB = (Number(bpB.stone)||0) + (Number(bpB.coal)||0) - KEEP_IN_INV;
-          if (overB > 1000) {
+          if (false && overB > 1000) {
             await p.walkTo(bank.BANK_WORLD.x, bank.BANK_WORLD.z, { maxSec: 60 }).catch(()=>{});
             const rb = await bank.depositAll(cli, ['stone','coal']);
             log(`[${tag}] 🏦 banked (sisa listing): ${(rb.moved||[]).join(', ') || 'tidak ada yang pindah'}`);
@@ -262,6 +267,10 @@ async function autoSell(cli, tag, items = ['stone','coal'], totalTarget = Number
 
 // helper: simpan kelebihan stok (di atas KEEP_IN_INV) ke bank — butuh presence aktif
 async function bankOverflow(cli, tag, items = ['stone','coal']) {
+  // FITUR BANK DIMATIKAN (permintaan user) — stok tetap di inventory untuk listing
+  return false;
+}
+async function bankOverflowDisabled(cli, tag, items = ['stone','coal']) {
   try {
     const me = await cli.me(); const bp = me.backpack || {};
     const tot = items.reduce((a,t)=>a+(Number(bp[t])||0),0);
@@ -303,10 +312,23 @@ async function bankOverflow(cli, tag, items = ['stone','coal']) {
 
   // DETEKSI FASE AWAL per wallet — skip fase yang udah beres:
   // semua skill >=5? skip F1 → mining>=10? skip F2 → KINS>=1000 & umur>=24h? skip F3 → langsung F4 (autosell)
+  const paywalled = [];
   for (const s of state) {
     try {
       const cli = await openClient(s);
       log(`${s.tag} login ok player=${cli.player && cli.player.id}`);
+      // DETEKSI PAYWALL: freeTier=true berarti lv10+ tanpa 1000 KINS — server-side gated
+      try {
+        const me0 = await cli.get('/api/auth/me');
+        s.freeTier = !!me0.freeTier;
+        if (s.freeTier) {
+          s.paywalled = true;
+          paywalled.push(`${s.tag} (lv10+ tanpa KINS — free play habis)`);
+          log(`${s.tag} 🔒 freeTier=true — PAYWALL (lv10 tanpa KINS): tidak bisa mining/listing sampai punya 1000 KINS`);
+          continue;
+        }
+        log(`${s.tag} freeTier=false — free play / eligible`);
+      } catch(e) { log(`${s.tag} freeTier check err: ${e.message.slice(0,50)}`); }
       const st = await levelStats(cli);
       const all5 = st && st.skillXp && SKILLS.every(k => levelFromTotalXp(st.skillXp[k]||0) >= 5);
       if (!all5) { s.phase = 1; log(`${s.tag} → mulai FASE 1`); continue; }
@@ -322,6 +344,9 @@ async function bankOverflow(cli, tag, items = ['stone','coal']) {
       log(`${s.tag} kins=${bal} umur ${age.toFixed(1)}d — LANGSUNG FASE 4 (autosell)`);
     } catch(e) { log(`${s.tag} deteksi gagal: ${e.message.slice(0,80)}`); }
     await sleep(rnd(15000, 30000));
+  }
+  if (paywalled.length) {
+    await report(`🔒 <b>WALLET KENA PAYWALL</b> (lv10+ tanpa 1000 KINS — free play habis):\n${paywalled.join('\n')}\n\nDi-skip dari semua fase. Beli 1000 $KINS ke wallet itu lalu restart bot untuk aktifkan kembali.`);
   }
 
   // FASE 1 — sequential 1 akun 1 waktu (hanya yang phase=1)
@@ -349,6 +374,7 @@ async function bankOverflow(cli, tag, items = ['stone','coal']) {
   let srvIdx = 0;
   for (const s of state) {
     if (s.phase !== 2) continue;
+    if (s.paywalled) { log(`${s.tag} 🔒 paywalled — SKIP FASE 2 mining`); continue; }
     const name = `lc-${s.tag}`;
     const srv = FORCE_SERVER || SERVERS[srvIdx % SERVERS.length];
     srvIdx++;
@@ -358,33 +384,88 @@ async function bankOverflow(cli, tag, items = ['stone','coal']) {
     log(`${s.tag} → screen ${name} (fase 2 rock @ server ${srv} — lanjut sampai level akun ≥10)`);
     await sleep(20000);
   }
-  // monitor level akun: cek tiap 15 menit; avg level >= 10 → STOP script akun itu (screen quit)
-  for (;;) {
-    await sleep(15 * 60 * 1000);
+  // FASE 4 — ROLLBACK: mining rock biasa (Pond/World), tetap: hanya ≥1000 KINS
+  // LOGIN 1/1: 1 wallet = 1 server DEDICATED (nggak dipakai wallet lain selama sesi ini)
+  {
+    log('⛏️ MODE ROCK — login 1/1: setiap wallet di server BERBEDA (dedicated)');
+    // kandidat server: RR 12-16 + sisanya (9,10,11,1-7) — cukup buat 21 wallet 1/1
+    const allServers = ['12','13','14','15','16','9','10','11','1','2','3','4','5','6','7'];
+    const usedServers = new Set();
+    let wi = 0;
     for (const s of state) {
-      if (!s.cli || s.phase >= 3) continue;
-      try {
-        const alv = await accountLevelOf(s.cli);
-        if (alv >= 10) {
-          try { execSync(`screen -S lc-${s.tag} -X quit 2>/dev/null`); } catch {}
-          s.phase = 3;
-          log(`${s.tag} level akun=${alv.toFixed(1)} ≥ 10 — FASE 2 selesai, mining STOP, masuk seleksi FASE 3 (harus hold 1000 KINS)`);
-        } else {
-          log(`${s.tag} level akun=${alv.toFixed(1)} < 10 — mining rock lanjut`);
-        }
-      } catch(e) { log(`${s.tag} level check err: ${e.message.slice(0,60)}`); }
-      await sleep(1500);
+      const name = `lc-${s.tag}`;
+      if (s.paywalled) { log(`${s.tag} 🔒 paywalled — SKIP (paywall aktif)`); continue; }
+      let bal = 0;
+      try { bal = await kinsBalance(s.pk); } catch (e) { log(`${s.tag} kins check err: ${e.message.slice(0,50)}`); }
+      s._lastKins = bal;
+      if (bal < 1000) {
+        s.kinsBlocked = true;
+        log(`${s.tag} 🚫 kins=${bal} <1000 — TIDAK mining (tanpa KINS gabisa farming)`);
+        try { execSync(`screen -S ${name} -X quit 2>/dev/null`); } catch {}
+        continue;
+      }
+      s.kinsBlocked = false;
+      // pilih server yang BELUM dipakai wallet lain (1/1)
+      const srv = allServers.find(x => !usedServers.has(x)) || allServers[wi % allServers.length];
+      usedServers.add(srv); s._srv = srv; wi++;
+      try { execSync(`screen -S ${name} -X quit 2>/dev/null`); } catch {}
+      execSync(`screen -dmS ${name} bash -c "KINTARA_FORCE_SERVER=${srv} KINTARA_NO_PHASE2=1 node ${ROOT}/tools/headless-runner.js '${s.pk}' rock >> ${ROOT}/recon/multi/${name}.out 2>&1"`);
+      log(`${s.tag} ⛏️ kins=${bal} — rock mining @ server ${srv} (DEDICATED 1/1) (screen ${name})`);
+      await sleep(15000);
     }
-    // begitu semua fase 2 selesai → keluar dari monitor ke fase 3
-    if (state.every(s => s.phase >= 3)) break;
+    // watchdog: jaga screen hidup + re-cek KINS (habis → stop; dapat → mulai)
+    for (;;) {
+      await sleep(5 * 60 * 1000);
+      for (const s of state) {
+        const name = `lc-${s.tag}`;
+        const alive = (() => { try { execSync(`screen -ls | grep -q ${name}`); return true; } catch { return false; } })();
+        let bal = s._lastKins || 0;
+        try { bal = await kinsBalance(s.pk); s._lastKins = bal; } catch {}
+        // re-cek paywall (wallet free play bisa naik lv10 saat bot jalan)
+        if (!s.paywalled && s.cli) {
+          try {
+            const me0 = await s.cli.get('/api/auth/me');
+            if (me0.freeTier) {
+              s.paywalled = true;
+              log(`${s.tag} 🔒 BARU kena paywall (lv10+ tanpa KINS) — mining dihentikan`);
+              await report(`🔒 ${s.tag} baru saja kena <b>paywall</b> (lv10, tanpa 1000 KINS). Mining dihentikan.`);
+            }
+          } catch {}
+        }
+        if (s.paywalled && bal < 1000) {
+          if (!s.kinsBlocked) log(`${s.tag} 🚫 paywall + kins=${bal} <1000 — tetap di-stop`);
+          s.kinsBlocked = true;
+          if (alive) { try { execSync(`screen -S ${name} -X quit 2>/dev/null`); } catch {} }
+          continue;
+        } else if (s.paywalled && bal >= 1000) {
+          log(`${s.tag} ✅ kins=${bal} ≥1000 — paywall lewat, mining lanjut`);
+          s.paywalled = false;
+        }
+        if (bal < 1000) {
+          if (!s.kinsBlocked) log(`${s.tag} 🚫 kins=${bal} <1000 — mining DI-STOP`);
+          s.kinsBlocked = true;
+          if (alive) { try { execSync(`screen -S ${name} -X quit 2>/dev/null`); } catch {} }
+          usedServers.delete(String(s._srv || ''));
+          continue;
+        }
+        if (s.kinsBlocked) { log(`${s.tag} ✅ kins=${bal} ≥1000 — mulai mining`); s.kinsBlocked = false; }
+        if (!alive) {
+          // respawn: tetap pakai server dedicated-nya sendiri
+          const srv = s._srv || allServers.find(x => !usedServers.has(x)) || allServers[wi % allServers.length];
+          usedServers.add(srv); s._srv = srv;
+          execSync(`screen -dmS ${name} bash -c "KINTARA_FORCE_SERVER=${srv} KINTARA_NO_PHASE2=1 node ${ROOT}/tools/headless-runner.js '${s.pk}' rock >> ${ROOT}/recon/multi/${name}.out 2>&1"`);
+          log(`${s.tag} 🔁 respawn rock mining @ ${srv} (dedicated)`);
+          await sleep(10000);
+        }
+      }
+    }
   }
 
-  // FASE 3 — seleksi KINS (loop jam-jaman; iterasi pertama langsung jalan)
-  const LISTS_PER_ITEM = Number(process.env.LISTS_PER_ITEM || 2);   // 2 listing per item (stone x2, coal x2) = 4 slot
-const PER_LISTING = Number(process.env.PER_LISTING || 5000);      // 5000 per listing
-const KEEP_IN_INV = Number(process.env.KEEP_IN_INV || 5000); // sisanya simpan di bank
+  // FASE 3 — seleksi KINS (loop jam-jaman; iterasi pertama langsung jalan) — PARALEL
+  const phase3Loop = (async () => {
+  
   for (let iter = 0; ; iter++) {
-    if (iter > 0) await sleep(3600 * 1000);
+    if (iter > 0) await sleep(15 * 60 * 1000);
     log('=== FASE 3 cek KINS ===');
     const ineligible = [];
     for (const s of state) {
@@ -392,7 +473,21 @@ const KEEP_IN_INV = Number(process.env.KEEP_IN_INV || 5000); // sisanya simpan d
         const bal = await kinsBalance(s.pk);
         const age = bal >= 1000 ? await kinsAgeDays(s.pk) : -1;
         log(`${s.tag} kins=${bal} age=${age.toFixed(1)}d`);
+        s._lastKins = bal;
         if (bal < 1000) ineligible.push(`${s.tag} (${pubkeyOf(s.pk).slice(0,8)}… kins=${bal})`);
+        // GATE: tanpa 1000 KINS → stop mining & jangan listing (aturan gabisa farming)
+        if (bal < 1000) {
+          s.kinsBlocked = true;
+          const name = `lc-${s.tag}`;
+          const alive = (() => { try { execSync(`screen -ls | grep -q ${name}`); return true; } catch { return false; } })();
+          if (alive) {
+            try { execSync(`screen -S ${name} -X quit 2>/dev/null`); } catch {}
+            log(`${s.tag} 🚫 kins=${bal} <1000 — mining DI-STOP (gabisa farming tanpa KINS)`);
+          }
+          await sleep(1000);
+          continue;
+        }
+        s.kinsBlocked = false;
         // FASE 4: umur >= 24 jam → siklus jual-mining
         if (bal >= 1000 && age >= 1.0) {
           try {
@@ -425,16 +520,28 @@ const KEEP_IN_INV = Number(process.env.KEEP_IN_INV || 5000); // sisanya simpan d
               const me2 = await cli.me();
               const bp2 = me2.backpack || {};
               const stockS = (Number(bp2.stone)||0), stockC = (Number(bp2.coal)||0);
-              const needPerItem = LISTS_PER_ITEM * PER_LISTING; // 10000 per item
-              if (stockS < needPerItem || stockC < needPerItem) {
-                log(`${s.tag} stok stone=${stockS} coal=${stockC} (butuh ${needPerItem}/item) — belum listing, mining dulu`);
-                await bankOverflow(cli, s.tag, ['stone','coal']); // jaga inv tetap ada ruang
-              } else {
-                await autoSell(cli, s.tag, ['stone','coal'], SELL_THRESHOLD);
+              // LISTING PER ITEM: stone dan coal berdiri sendiri — yang sudah cukup langsung dilist, jangan nunggu item lain
+              let listedAny = false;
+              if (stockS >= PER_LISTING) {
+                log(`${s.tag} stone=${stockS} ≥ ${PER_LISTING} — list stone langsung (tanpa nunggu coal)`);
+                await autoSell(cli, s.tag, ['stone'], PER_LISTING);
+                listedAny = true;
+                await sleep(rnd(2000,4000));
+              }
+              if (stockC >= PER_LISTING) {
+                log(`${s.tag} coal=${stockC} ≥ ${PER_LISTING} — list coal langsung (tanpa nunggu stone)`);
+                await autoSell(cli, s.tag, ['coal'], PER_LISTING);
+                listedAny = true;
+                await sleep(rnd(2000,4000));
+              }
+              if (listedAny) {
                 s.lastListingAt = Date.now();
                 log(`${s.tag} 🏷️ listing selesai — wajib mining 3 jam sebelum listing lagi`);
                 // AUTO-BANK fallback: sisanya (di atas KEEP_IN_INV) masuk bank
                 await bankOverflow(cli, s.tag, ['stone','coal']);
+              } else {
+                log(`${s.tag} stok stone=${stockS} coal=${stockC} (butuh ${PER_LISTING}/item) — belum cukup untuk list apapun, mining dulu`);
+                await bankOverflow(cli, s.tag, ['stone','coal']); // jaga inv tetap ada ruang
               }
             }
             // pastikan mining rock jalan (apapun kondisi di atas, setelah listing / selama nunggu 3 jam)
@@ -442,7 +549,7 @@ const KEEP_IN_INV = Number(process.env.KEEP_IN_INV || 5000); // sisanya simpan d
             const name = `lc-${s.tag}`;
             const alive = (() => { try { execSync(`screen -ls | grep -q ${name}`); return true; } catch { return false; } })();
             if (!alive) {
-              const srv = FORCE_SERVER ? `KINTARA_FORCE_SERVER=${FORCE_SERVER} ` : '';
+              const srv = `KINTARA_FORCE_SERVER=${SERVERS[srv4++ % SERVERS.length]} `;
               execSync(`screen -dmS ${name} bash -c "${srv}KINTARA_NO_PHASE2=1 node ${ROOT}/tools/headless-runner.js '${s.pk}' rock >> ${ROOT}/recon/multi/${name}.out 2>&1"`);
               log(`${s.tag} ⛏️ mining rock jalan (screen ${name}) — cek: tail -f recon/multi/${name}.out`);
               // verifikasi screen beneran hidup
@@ -462,10 +569,74 @@ const KEEP_IN_INV = Number(process.env.KEEP_IN_INV || 5000); // sisanya simpan d
       } catch(e) { log(`${s.tag} kins check err: ${e.message.slice(0,60)}`); }
       await sleep(1500);
     }
+    // KOREKSI ATURAN: akun avg level >=10 TANPA 1000 KINS → TIDAK BOLEH farming.
+    // Stop screen mining-nya dan tandai ineligible (screen dijaga tetap mati).
+    for (const s of state) {
+      try {
+        const bal = s._lastKins !== undefined ? s._lastKins : await kinsBalance(s.pk);
+        s._lastKins = bal;
+        if (bal < 1000) {
+          const name = `lc-${s.tag}`;
+          const alive = (() => { try { execSync(`screen -ls | grep -q ${name}`); return true; } catch { return false; } })();
+          if (alive) {
+            try { execSync(`screen -S ${name} -X quit 2>/dev/null`); } catch {}
+            log(`${s.tag} 🚫 kins=${bal} <1000 & level ≥10 — mining DI-STOP (aturan: tanpa KINS gabisa farming)`);
+          }
+          s.kinsBlocked = true;
+        } else {
+          if (s.kinsBlocked) log(`${s.tag} ✅ kins=${bal} ≥1000 — farming boleh jalan lagi`);
+          s.kinsBlocked = false;
+        }
+      } catch(e) { log(`${s.tag} kins-gate err: ${e.message.slice(0,60)}`); }
+      await sleep(1000);
+    }
+    // WATCHDOG: log .out runner stale >15 menit → respawn screen
+    for (const s of state) {
+      if (s.phase < 2) continue;
+      if (s.kinsBlocked) continue; // TANPA KINS: jangan respawn mining
+      try {
+        const name = `lc-${s.tag}`;
+        const f = `${ROOT}/recon/multi/${name}.out`;
+        const st2 = require('fs').statSync(f);
+        if (Date.now() - st2.mtimeMs > 15 * 60 * 1000) {
+          log(`${s.tag} ⏰ log stale >15m — respawn screen ${name}`);
+          try { execSync(`screen -S ${name} -X quit 2>/dev/null`); } catch {}
+          await sleep(2000);
+          const srv = `KINTARA_FORCE_SERVER=${SERVERS[srv4++ % SERVERS.length]} `;
+          execSync(`screen -dmS ${name} bash -c "${srv}KINTARA_NO_PHASE2=1 node ${ROOT}/tools/headless-runner.js '${s.pk}' rock >> ${ROOT}/recon/multi/${name}.out 2>&1"`);
+          await sleep(1500);
+        }
+      } catch {}
+    }
     if (ineligible.length) {
       await report(`⚠️ <b>WALLET TIDAK ELIGIBLE</b> (tidak punya 1000 KINS):\n${ineligible.join('\n')}\n\nMining rock dilanjutkan untuk eligible.`);
     } else {
       await report('✅ Semua wallet eligible (1000 KINS) — mining lanjut.');
     }
   }
+  })();
+
+  // monitor level akun: cek tiap 15 menit; avg level >= 10 → STOP script akun itu (screen quit)
+  for (;;) {
+    await sleep(15 * 60 * 1000);
+    for (const s of state) {
+      if (!s.cli || s.phase >= 3) continue;
+      try {
+        const alv = await accountLevelOf(s.cli);
+        if (alv >= 10) {
+          try { execSync(`screen -S lc-${s.tag} -X quit 2>/dev/null`); } catch {}
+          s.phase = 3;
+          log(`${s.tag} level akun=${alv.toFixed(1)} ≥ 10 — FASE 2 selesai, mining STOP, masuk seleksi FASE 3 (harus hold 1000 KINS)`);
+        } else {
+          log(`${s.tag} level akun=${alv.toFixed(1)} < 10 — mining rock lanjut`);
+        }
+      } catch(e) { log(`${s.tag} level check err: ${e.message.slice(0,60)}`); }
+      await sleep(1500);
+    }
+    // begitu semua fase 2 selesai → keluar dari monitor ke fase 3
+    if (state.every(s => s.phase >= 3)) break;
+  }
+
+
+  // monitor fase-2 tetap jalan bersamaan
 })().catch(e => { log('FATAL ' + e.message); process.exit(1); });

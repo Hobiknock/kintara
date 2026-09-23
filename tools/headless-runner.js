@@ -5,7 +5,7 @@
 // Usage: node headless-runner.js <privateKeyBase58> [mode]   mode: auto (default) | rock | wood | fish | combat | tutorial-only
 const fs = require('fs');
 const path = require('path');
-const BOT = '/home/agentuser/kintara-bot';
+const BOT = require('path').join(__dirname, '..');
 const { KintaraClient } = require(BOT + '/lib/kintaraClient');
 const loops = require(BOT + '/tools/farm-loops');
 const { loadKeypair } = require(BOT + '/lib/walletAuth');
@@ -62,6 +62,8 @@ function makeCtx(name) {
       if (m.includes('LEVEL UP')) report(levelUpReport(m));
       else report(`${CHAR_NAME || WALLET_ID}\n${m}`);
     } };
+  // KINTARA_ZONE=whisperwood → runWood/runRock pakai zone eldergrove (peta Whisperwood)
+  if (/^whisper/i.test(process.env.KINTARA_ZONE || '')) ctx.zone = 'whisperwood';
   return ctx;
 }
 
