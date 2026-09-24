@@ -141,3 +141,31 @@ tunggu yang lama kejual/expired.
 A: Setelah semua skill lv 5, yang di-push cuma mining (stone & coal) sampai
 **level akun ≥ 10** — skill lain diem di lv 5. Setelah itu akun stop mining dan
 masuk seleksi fase 3 (wajib hold 1000 KINS).
+
+## Fitur Baru (Sep 2026)
+
+### Paywall gate (freeTier) — otomatis
+- Tiap wallet dicek on-chain (KINS) + `freeTier` dari `/api/auth/me`
+- **lv10+ tanpa 1000 KINS = paywall**: mining STOP, watchdog tidak respawn, listing di-skip — lapor Telegram
+- Kalau wallet dapat ≥1000 KINS → otomatis lewat paywall & farming jalan lagi
+- Verifikasi per-PK (bukan per-nama label) — label log `wN` = posisi baris di `.env`
+
+### Login 1/1 — tiap wallet server dedicated
+- Kandidat server: asia 12–16, eu 9–11, us 1–7 (15 slot, cukup buat 21 wallet)
+- Tiap wallet dapat 1 server yang tidak dipakai wallet lain; watchdog respawn tetap balik ke server dedicated-nya sendiri
+- Override: `KINTARA_FORCE_SERVER=<id>` (kalau di-set, semua pakai itu)
+
+### Failover cerdas (port dari kintara-bot/orchestrator pickShard)
+- `pickHealthyShard()`: ambil `/api/servers` → sort (non-full dulu, lalu queueLength terkecil) → cek `gate-check?shard=N` → pilih sehat
+- Trigger: >15 node skip beruntun + >5 menit tanpa panen → pindah shard instan (server dedicated sendiri di-skip dari kandidat)
+- Scan shard lama (>8 mnt zero felled) tetap ada sebagai fallback
+
+### Kecepatan & harvest
+- `KINTARA_SPEED` di `tools/farm-loops.js` (default 2.5, max 3) — pangkas jeda client saja, protokol server tidak disentuh
+- `harvestNodeV2 maxSec: 10` — node HP tinggi tidak kepotong di tengah pukulan
+
+### Tunjukan tools lain
+```bash
+node tools/list-names.js   # laporan semua wallet: nama, level, KINS on-chain, stone/coal inv+bank
+node tools/check-inv.js    # cek inventory cepat
+```
