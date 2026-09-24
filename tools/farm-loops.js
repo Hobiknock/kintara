@@ -27,20 +27,17 @@ async function pickHealthyShard(cli, onEvent, { skipShards = [] } = {}) {
   try {
     const r = await cli.servers();
     const list = (r && Array.isArray(r.servers)) ? r.servers.filter((x) => x && x.id != null) : [];
-    const ranked = list.sort((a, b) => {
-      const af = !!a.full, bf = !!b.full;
-      if (af !== bf) return af ? 1 : -1; // yang nggak full dulu
-      return (Number(a.queueLength) || 0) - (Number(b.queueLength) || 0);
-    });
-    for (const sv of ranked) {
+    // PENTING: hanya server asia/eu (id >= 8) — server us 1-7 kena membership_required (403) utk wallet free.
+    // (queueLength dari /api/servers selalu 0 = nggak informatif; gate-check satu2nya sinyal sehat beneran.)
+    const pool = list.filter((x) => Number(x.id) >= 8).sort((a, b) => (Number(a.queueLength) || 0) - (Number(b.queueLength) || 0));
+    for (const sv of pool) {
       const shard = 's' + (sv.routeShardId || sv.id);
       if (skipShards.includes(shard)) continue;
       let gate = null;
       try { const g = await cli.get(`/api/auth/gate-check?shard=${Number(sv.id) | 0}`); gate = g && g.gate === 'ok'; }
-      catch (e) { gate = (e && e.status === 403) ? false : null; }
+      catch (e) { gate = false; } // 403 membership / 502 = bukan kandidat
       if (gate === true) { _shardCache.ts = Date.now(); _shardCache.shard = shard; return shard; }
     }
-    if (ranked[0]) { const sh = 's' + (ranked[0].routeShardId || ranked[0].id); _shardCache.ts = Date.now(); _shardCache.shard = sh; return sh; }
   } catch (e) { onEvent && onEvent(`pickHealthyShard err: ${e.message.slice(0, 40)}`); }
   return null;
 }
@@ -504,25 +501,41 @@ async function runRock(ctx) {
       }
       // FAILOVER CEPAT (kintara-bot style): ≥5 gateway error beruntun (502/404/403 di log) →
       // pindah server INSTAN pakai pickHealthyShard — nggak nunggu retry backoff 60-75 dtk berkali-kali.
-      if (fails % 15 === 0 && fails >= 15) {
-        const gwErrs = (fails >= 15 && Date.now() - lastFelledAt > 5 * 60000) ? 'yes' : 'no';
-        if (gwErrs === 'yes') {
-          const skipCur = [String(p.shard || '')];
-          const sh = await pickHealthyShard(cli, onEvent, { skipShards: skipCur });
-          if (sh && sh !== String(p.shard || '')) {
-            onEvent(`♻️ failover cepat: server ${p.shard} bermasalah → pindah ${sh} (pickHealthyShard)...`);
-            try { p.close(); } catch {}
-            const pn = await Promise.race([connectPresence(cli, onEvent, 0, sh), sleep(30000).then(()=>null)]);
-            if (pn) {
-              Object.assign(p, pn);
-              dead.clear(); skipStreak = 0; felledSinceMove = 0;
-              if (p.region !== 'pond') { await gotoPond(p, onEvent).catch(() => {}); }
-              let wf = 0; while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && wf < 8000) { await sleep(650); wf += 1000; }
-              continue;
+      // v2: trigger juga kalau stuck >5 mnt walau nggak ada node skip (server dedicated kosong/blokir).
+      const stuckNoFelled = Date.now() - lastFelledAt > 5 * 60000;
+      if ((fails % 15 === 0 && fails >= 15 && stuckNoFelled) || (stuckNoFelled && fails === 0 && !p.ready)) {
+        const skipCur = [String(p.shard || '')];
+        const sh = await pickHealthyShard(cli, onEvent, { skipShards: skipCur });
+        if (sh && sh !== String(p.shard || '')) {
+          onEvent(`♻️ failover cepat: server ${p.shard} bermasalah → coba ${sh} (pickHealthyShard)...`);
+          try { p.close(); } catch {}
+          const pn = await Promise.race([connectPresence(cli, onEvent, 0, sh), sleep(45000).then(()=>null)]);
+          if (pn && String(pn.shard || '') === sh) { // VERIFY: shard baru harus beneran nyambung
+            Object.assign(p, pn);
+            dead.clear(); skipStreak = 0; felledSinceMove = 0; fails = 0; lastFelledAt = Date.now();
+            if (p.region !== 'pond') { await gotoPond(p, onEvent).catch(() => {}); }
+            let wf = 0; while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && wf < 8000) { await sleep(650); wf += 1000; }
+            continue;
+          } else {
+            // kandidat pertama gagal → coba kandidat berikutnya (skip yg udah dicoba)
+            onEvent(`♻️ ${sh} gagal nyambung — cari kandidat lain...`);
+            const tried = [...skipCur, sh];
+            const sh2 = await pickHealthyShard(cli, onEvent, { skipShards: tried });
+            if (sh2) {
+              try { p.close(); } catch {}
+              const pn2 = await Promise.race([connectPresence(cli, onEvent, 0, sh2), sleep(45000).then(()=>null)]);
+              if (pn2 && String(pn2.shard || '') === sh2) {
+                Object.assign(p, pn2);
+                dead.clear(); skipStreak = 0; felledSinceMove = 0; fails = 0; lastFelledAt = Date.now();
+                if (p.region !== 'pond') { await gotoPond(p, onEvent).catch(() => {}); }
+                let wg = 0; while (!(p.nodes && [...p.nodes.values()].some((n) => n.kind === 'rock')) && wg < 8000) { await sleep(650); wg += 1000; }
+                continue;
+              }
             }
-          } else { onEvent('♻️ failover: server sehat nggak ketemu — tetap di sini, reset fail counter'); }
-          fails = 0;
-        }
+            onEvent('♻️ semua kandidat gagal — balik retry di shard asal');
+          }
+        } else { onEvent('♻️ failover: server sehat nggak ketemu — tetap di sini'); }
+        fails = 0; lastFelledAt = Date.now(); // reset biar nggak loop trigger tiap tick
       }
     }
     if (!p.ready) { onEvent('🔌 reconnect...'); try { p.close(); } catch {}

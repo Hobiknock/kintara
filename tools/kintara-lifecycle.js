@@ -317,6 +317,7 @@ async function bankOverflowDisabled(cli, tag, items = ['stone','coal']) {
     try {
       const cli = await openClient(s);
       log(`${s.tag} login ok player=${cli.player && cli.player.id}`);
+      s._name = cli.player?.display_name || cli.player?.name || null; // nama akun in-game buat laporan
       // DETEKSI PAYWALL: freeTier=true berarti lv10+ tanpa 1000 KINS — server-side gated
       try {
         const me0 = await cli.get('/api/auth/me');
@@ -345,9 +346,7 @@ async function bankOverflowDisabled(cli, tag, items = ['stone','coal']) {
     } catch(e) { log(`${s.tag} deteksi gagal: ${e.message.slice(0,80)}`); }
     await sleep(rnd(15000, 30000));
   }
-  if (paywalled.length) {
-    await report(`🔒 <b>WALLET KENA PAYWALL</b> (lv10+ tanpa 1000 KINS — free play habis):\n${paywalled.join('\n')}\n\nDi-skip dari semua fase. Beli 1000 $KINS ke wallet itu lalu restart bot untuk aktifkan kembali.`);
-  }
+  // (laporan paywall ke Telegram dihapus atas permintaan user — hanya tercatat di log lokal)
 
   // FASE 1 — sequential 1 akun 1 waktu (hanya yang phase=1)
   for (const s of state.filter(x => x.phase === 1)) {
@@ -413,6 +412,59 @@ async function bankOverflowDisabled(cli, tag, items = ['stone','coal']) {
       log(`${s.tag} ⛏️ kins=${bal} — rock mining @ server ${srv} (DEDICATED 1/1) (screen ${name})`);
       await sleep(15000);
     }
+    // ===== LAPORAN MINING (jam-jaman + /update on-demand) =====
+    // Snapshot hasil dari recon/multi/lc-wN.out → format laporan → Telegram.
+    // /update di Telegram = laporan instan tanpa nunggu 1 jam.
+    const _hourly = { lastAt: Date.now(), snap: {}, _p: Date.now() };
+    const readLast = (f, re) => { try { const t = fs.readFileSync(path.join(ROOT, 'recon/multi', f), 'utf8').match(new RegExp(re, 'g')); return t ? Number(String(t[t.length - 1]).replace(/\D/g, '')) || 0 : 0; } catch { return 0; } };
+    const readFelled = (f) => { try { return fs.readFileSync(path.join(ROOT, 'recon/multi', f), 'utf8').split('rock felled').length - 1; } catch { return 0; } };
+    async function buildReport() {
+      const now = Date.now();
+      const dtMin = Math.max(1, Math.round((now - _hourly._p) / 60000));
+      const lines = []; let totS = 0, totC = 0, totF = 0;
+      for (const s of state) {
+        if (s.paywalled || s.kinsBlocked) continue;
+        const f = `lc-${s.tag}.out`;
+        const st = readLast(f, 'stone\\+\\d+'), co = readLast(f, 'coal\\+\\d+'), fel = readFelled(f);
+        const dS = st - (_hourly.snap[s.tag]?.st || 0), dC = co - (_hourly.snap[s.tag]?.co || 0), dF = fel - (_hourly.snap[s.tag]?.fel || 0);
+        _hourly.snap[s.tag] = { st, co, fel };
+        totS += dS; totC += dC; totF += dF;
+        lines.push(`▸ ${s._name || s.tag} @srv${s._srv || '?'} — ${dS.toLocaleString('id-ID')} stone + ${dC.toLocaleString('id-ID')} coal = <b>${(dS + dC).toLocaleString('id-ID')} ore</b> (${dF.toLocaleString('id-ID')} node)`);
+      }
+      _hourly._p = now;
+      const jam = Math.round(dtMin / 60 * 10) / 10;
+      return `📊 <b>LAPORAN MINING</b> (${new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })} — ${dtMin} mnt)\n${lines.join('\n')}\n\n<b>TOTAL: ${totS.toLocaleString('id-ID')} stone + ${totC.toLocaleString('id-ID')} coal = ${(totS + totC).toLocaleString('id-ID')} ore</b> (${totF.toLocaleString('id-ID')} node dipanen, ~${Math.round((totS + totC) / jam).toLocaleString('id-ID')} ore/jam)`;
+    }
+    (async () => { // jam-jaman
+      for (;;) {
+        await sleep(10 * 60 * 1000);
+        if (Date.now() - _hourly.lastAt < 60 * 60 * 1000) continue;
+        _hourly.lastAt = Date.now();
+        await report(await buildReport());
+      }
+    })();
+    (async () => { // /update on-demand (polling Telegram, dedupe via offset di memori)
+      let off = 0;
+      for (;;) {
+        try {
+          const r = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/getUpdates?timeout=25&offset=${off}${TG_TOKEN ? '' : '&x=1'}`);
+          const j = await r.json();
+          for (const u of (j.result || [])) {
+            off = u.update_id + 1;
+            const msg = u.message || {};
+            const cmd = String(msg.text || '').trim().split(/\s+/)[0];
+            if (!cmd || String(msg.chat?.id) !== String(TG_CHAT)) continue;
+            if (cmd === '/update' || cmd === '/status') {
+              log(`[tg] ${cmd} dari user — kirim laporan instan`);
+              await report(await buildReport());
+            } else if (cmd === '/help') {
+              await report('📖 <b>Command bot farm:</b>\n/update — laporan mining instan\n/status — sama dengan /update\n/help — daftar command');
+            }
+          }
+        } catch (e) { log(`[tg poll] err: ${e.message.slice(0, 40)}`); }
+        await sleep(3000);
+      }
+    })();
     // watchdog: jaga screen hidup + re-cek KINS (habis → stop; dapat → mulai)
     for (;;) {
       await sleep(5 * 60 * 1000);
@@ -428,7 +480,6 @@ async function bankOverflowDisabled(cli, tag, items = ['stone','coal']) {
             if (me0.freeTier) {
               s.paywalled = true;
               log(`${s.tag} 🔒 BARU kena paywall (lv10+ tanpa KINS) — mining dihentikan`);
-              await report(`🔒 ${s.tag} baru saja kena <b>paywall</b> (lv10, tanpa 1000 KINS). Mining dihentikan.`);
             }
           } catch {}
         }
@@ -608,11 +659,7 @@ async function bankOverflowDisabled(cli, tag, items = ['stone','coal']) {
         }
       } catch {}
     }
-    if (ineligible.length) {
-      await report(`⚠️ <b>WALLET TIDAK ELIGIBLE</b> (tidak punya 1000 KINS):\n${ineligible.join('\n')}\n\nMining rock dilanjutkan untuk eligible.`);
-    } else {
-      await report('✅ Semua wallet eligible (1000 KINS) — mining lanjut.');
-    }
+    // (lapor eligible/ineligible dihapus atas permintaan user — cukup log lokal)
   }
   })();
 
