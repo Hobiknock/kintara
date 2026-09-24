@@ -1,190 +1,121 @@
-# 🦞 Kintara Bot
+# ⛏️ Kintara Farm Bot
 
-Headless automation bot untuk **Kintara** (MMO isometrik berbasis Solana di kintara.com) — mining, woodcutting, fishing, cooking, combat zombie/dragon, banking, daily quest + spinner, dan orchestrator AUTO — semuanya dikontrol via **Telegram bot**. Tanpa browser.
+Bot farming multi-wallet untuk **Kintara** (kintara.com) — mining stone/coal otomatis dengan paywall gate, server dedicated 1/1, failover cerdas, dan laporan Telegram.
 
-> ⚠️ **Aturan anti-cheat game:** 1 akun = 1 aktivitas dalam satu waktu (fishing/gathering/combat). Bot ini menghormati timing protokol server (tidak mempercepat timer server) supaya aman.
+> Fokus: **stone & coal** dari rock mining. Wallet tanpa 1000 KINS yang sudah lv10+ otomatis dihentikan (paywall server-side).
 
-## ✨ Fitur
+## ✨ Fitur Utama
 
-| Command | Fungsi |
-|---|---|
-| `/auto` | 🧠 Smart orchestrator — panen otomatis berbasis target (lihat di bawah) |
-| `/rock` | ⛏️ Mining stone + coal |
-| `/wood` | 🪓 Woodcutting |
-| `/fish` | 🎣 Fishing + auto-cooking |
-| `/combat` | ⚔️ Hunt zombie (`/combat boss` = dragon) |
-| `/spinner` | 🎡 Daily free spin (auto-kerjain quest dulu, lalu spin) |
-| `/tutorial` | 🎓 Tutorial bot |
-| `/status` | 📊 Status bot + inventory real-time |
-| `/skills` | 📈 Skill levels |
-| `/quest` | 📋 Daily quest progress (+ auto-claim) |
-| `/market` | 💰 Harga pasar real-time |
-| `/server` | 🖥️ Live queues + auto-pick shard |
-| `/version` | ℹ️ Game version |
-| `/diag` | 🔧 Auth/queue diagnostics |
-| `/balance` | 👝 Cek gold |
-| `/stop` | 🛑 Stop aktivitas |
-| `/help` | 📖 Daftar command |
+### 1. Paywall Gate (freeTier)
+- Tiap wallet dicek on-chain (balance KINS) + `freeTier` dari `/api/auth/me`
+- **lv10+ tanpa 1000 KINS = paywall** → mining STOP, tidak di-respawn, tidak listing
+- Wallet dapat ≥1000 KINS → otomatis lanjut farming lagi
+- Verifikasi **per private key** (bukan label nama) — selalu akurat
 
-## 🤖 AUTO Mode (`/auto`)
+### 2. Login 1/1 — Server Dedicated
+- Kandidat: asia 12–16, eu 8–11, us 1–7 (us hanya untuk wallet membership)
+- Tiap wallet dapat **1 server yang tidak dipakai wallet lain**
+- Watchdog respawn selalu balik ke server dedicated-nya sendiri
 
-Siklus target-based — fase berpindah otomatis begitu target tercapai (dicek tiap 30 detik):
+### 3. Failover Cerdas (port dari kintara-bot orchestrator)
+- `pickHealthyShard()`: ambil `/api/servers` → **filter asia/eu saja (id ≥ 8, server us 1–7 kena `membership_required` 403)** → cek `gate-check?shard=N` → pilih sehat
+- Trigger: >15 node skip beruntun + >5 mnt tanpa panen, ATAU stuck >5 mnt walau tanpa node skip
+- Shard baru **diverifikasi beneran nyambung** — kandidat gagal → otomatis coba berikutnya
+- Fallback lama tetap ada: scan shard by node (>8 mnt zero felled)
 
-```
-🪓 wood 1000 → ⛏ stone/coal 2000 (yang duluan) → ⚔️ 20 kill zombie → 🎣 30 cooked fish → ulang
-```
+### 4. Laporan Telegram
+- **Otomatis per jam**: hasil per wallet (nama akun in-game, stone/coal/ore/node, server) + TOTAL + rate ore/jam
+- **On-demand**: kirim `/update` → laporan instan
+- Command: `/update`, `/status`, `/help`
+- Angka yang dilaporkan = **delta sejak laporan terakhir** (bukan kumulatif)
 
-- Mati di wild → auto-respawn, re-equip pedang, refill potion, masuk lagi
-- Potion auto-craft (health = 60 wood, shield = 50 stone — bahan ditarik dari bank)
-- Quest harian auto-claim + spin di antara fase
-- Fase stuck > 90 menit → auto-skip ke fase berikutnya
+### 5. Kecepatan
+- `KINTARA_SPEED` default **2.5** (max 3) — pangkas jeda client saja, protokol server tidak disentuh
+- `harvestNodeV2 maxSec: 10` — node HP tinggi tidak kepotong
 
 ## 🚀 Cara Pakai
 
-### One-line install (VPS Ubuntu/Debian baru)
+### 1. Install
 
 ```bash
-curl -sL https://raw.githubusercontent.com/Hobiknock/kintara-bot/main/install.sh | bash
-```
-
-Installer otomatis: install Node.js ≥ 18 + screen, clone repo, `npm install`, siapkan `.env` template. **Kamu tinggal isi 2 kredensial sendiri** (jangan pernah share):
-
-```bash
-nano ~/kintara-bot/.env
-```
-
-- `WALLET_PRIVATE_KEY` — private key wallet akun game kamu
-- `TELEGRAM_BOT_TOKEN` — token dari [@BotFather](https://t.me/BotFather) (`/newbot`)
-
-Lalu start:
-
-```bash
-node ~/kintara-bot/kintara.js
-```
-
-> ⚡ **Lebih simpel:** `node kintara.js` (tanpa argumen) langsung jalanin bot.
-> Kalau `.env` belum ada, dia **otomatis bikin dari template** dan kasih tahu:
-> `nano .env` → isi 2 baris → `node kintara.js` lagi. Gak perlu cp/copy apa-apa.
-
-### 🧩 Multi-akun (beberapa akun, beberapa bot token, 1 VPS)
-
-Buat `accounts.json` (copy dari `accounts.example.json`), 1 entry per akun:
-
-```json
-[
-  { "name": "akun1", "wallet": "PK_AKUN1", "bot_token": "TOKEN_BOT1", "chat_id": "", "mode": "auto" },
-  { "name": "akun2", "wallet": "PK_AKUN2", "bot_token": "TOKEN_BOT2", "chat_id": "", "mode": "auto" }
-]
-```
-
-```bash
-node kintara.js all        # jalanin SEMUA akun (1 screen per akun)
-node kintara.js akun1      # jalanin 1 akun saja
-node kintara.js stop akun1 # stop permanen 1 akun (akun lain jalan terus)
-bash persist-all.sh        # cron keep-alive untuk semua akun + auto-start saat reboot
-```
-
-Kontrol tiap akun lewat bot Telegram-nya masing-masing (`/auto /rock /combat /setkey` dst).
-**Wajib: bot token unik per akun** (1 token = 1 instance; dua proses token sama = Telegram error).
-
-### 🛡️ Persistensi (otomatis terpasang di VPS kamu)
-
-Installer & `start.sh` otomatis pasang cron di VPS kamu — bot **tersimpan dan tetap hidup**:
-
-| Kejadian | Yang terjadi |
-|---|---|
-| Bot crash | Keeper auto-restart dalam 10 detik |
-| Screen/keeper mati total | Cron keep-alive bangunin lagi (maks 5 menit) |
-| **VPS reboot / restart** | **Bot auto-start sendiri saat boot** |
-| `git pull` update | `.env` & log kamu gak pernah ketimpa — aman |
-| Mau berhenti | `~/kintara-bot/stop.sh` — stop **permanen** (cron gak bangunin lagi) |
-| Nyalain lagi | `~/kintara-bot/start.sh` |
-
-### Install manual (kalau one-line gak jalan)
-
-<details>
-<summary>📋 Klik buat lihat langkah manual</summary>
-
-```bash
-# 1. Node.js >= 18 (Ubuntu/Debian)
-sudo apt update && sudo apt install -y nodejs npm
-
-# 2. Clone
-git clone https://github.com/Hobiknock/kintara-bot.git
-cd kintara-bot
-
-# 3. Dependencies
+git clone https://github.com/Hobiknock/kintara.git
+cd kintara
 npm install
-
-# 4. Jalanin — .env template dibuat otomatis
-node kintara.js
-#    → ikuti pesannya: nano .env (isi WALLET_PRIVATE_KEY + TELEGRAM_BOT_TOKEN)
-
-# 5. Jalan lagi
-node kintara.js
 ```
 
-<details>
-<summary>⚙️ Mode persisten klasik (screen 'kintara' + keeper + cron)</summary>
+### 2. Isi `.env`
+
+```env
+# Wallet — 1 private key per baris di block WALLETS (atau dipisah koma)
+WALLETS=pk_wallet1_base58
+pk_wallet2_base58
+pk_wallet3_base58
+
+# Telegram (wajib kalau mau laporan)
+TELEGRAM_BOT_TOKEN=123456:ABC...
+TELEGRAM_CHAT_ID=chat_id_kamu
+REPORT_TG_TOKEN=123456:ABC...   # opsional, override token laporan
+REPORT_TG_CHAT=chat_id_kamu
+
+# Opsional
+KINTARA_FORCE_SERVER=12   # paksa semua wallet ke 1 server (menonaktifkan 1/1)
+SELL_THRESHOLD=10000      # target jual per siklus listing
+```
+
+### 3. Jalankan
 
 ```bash
-./start.sh   # jalan di screen 'kintara' + auto-restart + cron keep-alive
-```
-</details>
+# test di depan (Ctrl+C stop)
+node tools/kintara-lifecycle.js
 
-</details>
-
-## 💻 Yang harus di-install (requirements)
-
-- **Node.js ≥ 18** (`node -v` buat cek)
-- **npm** (ikut Node)
-- **screen** (biasanya udah ada di VPS)
-- **git** (buat clone)
-- Tidak perlu browser / playwright — bot jalan headless via REST + WebSocket
-
-Dependensi npm (`npm install` otomatis): `ws` (WebSocket), `tweetnacl` + `bs58` (sign auth Solana).
-
-## 🗂️ Struktur
-
-```
-kintara-bot/
-├── tools/telegram-ctl.js   # entry point — bot Telegram (17 command)
-├── tools/farm-loops.js     # engine: mining/wood/fish/combat/spinner/quest
-├── lib/
-│   ├── kintaraClient.js    # REST client (login, quest, market, banking)
-│   ├── presenceWs.js       # WebSocket engine (harvestNodeV2, fishing, combat)
-│   ├── walletAuth.js       # auth via private key (Solana sign)
-│   ├── bank.js             # deposit/withdraw bank
-│   ├── skillXp.js          # level calculator
-│   └── telegram.js         # Telegram bot client (long polling)
-├── keeper.sh               # auto-restart wrapper
-├── start.sh                # starter persisten (screen)
-├── install.sh              # one-line installer
-├── .env.example            # template kredensial (isi sendiri)
-└── package.json
+# produksi — background
+screen -dmS lifetime bash -c 'node tools/kintara-lifecycle.js >> lifecycle.log 2>&1'
 ```
 
-## 🔧 Konfigurasi opsional (.env)
+### 4. Monitor
 
-| Var | Default | Fungsi |
+```bash
+tail -f lifecycle.log              # log utama
+tail -f recon/multi/lc-w1.out      # log mining per wallet
+screen -ls                          # screen aktif
+```
+
+Lalu di Telegram: kirim `/update` kapan saja untuk laporan instan.
+
+## 📊 Contoh Laporan
+
+```
+📊 LAPORAN MINING (16.32 — 60 mnt)
+▸ molie @srv12 — 1.620 stone + 420 coal = 2.040 ore (105 node)
+▸ wuavee @srv13 — 3.000 stone + 780 coal = 3.780 ore (150 node)
+...
+TOTAL: 12.960 stone + 5.280 coal = 18.240 ore (1.500 node dipanen, ~18.240 ore/jam)
+```
+
+## 🔧 Tools Pendukung
+
+```bash
+node tools/list-names.js   # laporan semua wallet: nama, level, KINS on-chain, stone/coal inv+bank
+node tools/check-inv.js    # cek inventory cepat
+```
+
+## ⚙️ Alur Fase
+
+| Fase | Kondisi | Aksi |
 |---|---|---|
-| `KINTARA_SPEED` | `1.5` | Multiplier jeda antar aksi (1.0 = human-normal, 1.5 = cepat) |
-| `KINTARA_PHASE_MAX_MIN` | `90` | Durasi maks 1 fase AUTO (menit) sebelum skip |
-| `KINTARA_FORCE_SHARD` | auto | Paksa shard (s2 = node terbanyak) |
+| F1 | skill < 5 | push semua skill sampai rata (tutorial aman) |
+| F2 | semua skill ≥ 5, akun < lv10 | mining rock gratis sampai avg lv 10 |
+| F3 | lv10, KINS ≥ 1000, umur ≥ 24 jam | jaga screen mining + siklus jual (cancel lama, list stone/coal ≥5000 @ 0.10–0.11 USD, max 4 slot) |
+| F4 | — | mining rock terus + watchdog (KINS habis → stop; dapat → mulai) |
 
-## 🔐 Keamanan
+Wallet lv10+ tanpa 1000 KINS → **paywall** → stop total (aturan: *gabisa farming*).
 
-- `.env` **tidak ikut** ke repo (`.gitignore`) — private key & bot token tidak pernah ter-commit
-- Setelah bot jalan, chat bot kamu di Telegram → kirim `/help`
-- Chat ID kamu auto-terekam saat command pertama (bot gak mau bales orang lain)
+## ⚠️ Catatan
 
-## ⚙️ Troubleshooting
-
-- **Bot gak bales** → cek log: `tail -f recon/telegram-ctl.log`
-- **Crash** → keeper auto-restart dalam 10 detik; kalau screen mati total: `./start.sh` lagi
-- **`502 / connect gagal`** → server game lagi down — bot auto-retry
-- **Menu command lama** → cache Telegram: close-reopen chat bot
+- Server kintara rate-limit login per-IP — bot auto-retry tiap 60 dtk (maks 20×/wallet)
+- Server berkala 502/404 (Cloudflare) — failover menangani, tapi kalau semua server sumpek ya breather
+- 1 akun = 1 aktivitas dalam satu waktu (aturan anti-cheat game)
 
 ## 📜 Lisensi
 
-MIT — pakai tanggung sendiri, ikutin aturan game biar gak kena ban.
+MIT
