@@ -355,15 +355,18 @@ async function bankOverflowDisabled(cli, tag, items = ['stone','coal']) {
   }
   // (laporan paywall ke Telegram dihapus atas permintaan user — hanya tercatat di log lokal)
 
-  // FASE 1 — sequential 1 akun 1 waktu (hanya yang phase=1)
-  for (const s of state.filter(x => x.phase === 1)) {
-    log(`=== ${s.tag} FASE 1 ===`);
-    try {
-      if (!s.cli) s.cli = await openClient(s);
-      await phase1(s.cli, s.tag);
-      s.phase = 2;
-    } catch(e) { log(`${s.tag} fase1 gagal: ${e.message.slice(0,80)}`); }
-    await sleep(rnd(15000, 30000)); // stagger anti rate-limit
+  // FASE 1 — PARALEL 1/1 (per permintaan user 25 Sep): tiap wallet langsung dapat sesi F1-nya
+  // sendiri di screen terpisah — w2 gak nunggu w1 selesai. Jeda login antar wallet 15-30 dtk
+  // tetap ada (anti rate-limit per IP), tapi setelah login semua jalan BERSAMAAN.
+  {
+    const { execSync } = require('child_process');
+    for (const s of state.filter(x => x.phase === 1)) {
+      log(`=== ${s.tag} FASE 1 — launch paralel ===`);
+      const name = `f1-${s.tag}`;
+      try { execSync(`screen -S ${name} -X quit 2>/dev/null`); } catch {}
+      execSync(`screen -dmS ${name} bash -c "node ${ROOT}/tools/f1-runner.js '${s.pk}' >> ${ROOT}/recon/multi/${name}.out 2>&1"`);
+      await sleep(rnd(15000, 30000)); // stagger login anti rate-limit
+    }
   }
 
   // FASE 2 — mining rock (stone & coal) SAJA setelah semua skill lv 5.
