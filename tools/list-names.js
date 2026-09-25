@@ -1,10 +1,11 @@
 // Laporan lengkap semua wallet: nama, level mining, kins, stone/coal (inventory + bank)
-const { KintaraClient } = require('/home/agentuser/kintara-lifecycle/lib/kintaraClient');
-const bank = require('/home/agentuser/kintara-lifecycle/lib/bank');
-const { levelFromTotalXp } = require('/home/agentuser/kintara-lifecycle/lib/skillXp');
+const { KintaraClient } = require(path.join(__dirname, '..', 'lib/kintaraClient'));
+const bank = require(path.join(__dirname, '..', 'lib/bank'));
+const { levelFromTotalXp } = require(path.join(__dirname, '..', 'lib/skillXp'));
 const fs = require('fs');
+const path = require('path');
 
-const env = fs.readFileSync('/home/agentuser/kintara-lifecycle/.env', 'utf8');
+const env = fs.readFileSync(path.join(__dirname, '..', '.env'), 'utf8');
 let pks = [];
 const m = env.match(/WALLETS=([\s\S]*?)(?=\n[A-Z_]+=|\n*$)/);
 if (m) {
@@ -70,6 +71,6 @@ function fmt(n) { return Number(n || 0).toLocaleString('en-US'); }
     }
     await new Promise(r => setTimeout(r, 1500));
   }
-  fs.writeFileSync('/home/agentuser/kintara-lifecycle/recon/wallet-report.json', JSON.stringify(rows, null, 2));
+  fs.writeFileSync(path.join(__dirname, '..', 'recon/wallet-report.json'), JSON.stringify(rows, null, 2));
   process.exit(0);
 })();

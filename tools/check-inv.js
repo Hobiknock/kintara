@@ -1,5 +1,5 @@
 
-const ROOT = '/home/agentuser/kintara-lifecycle';
+const ROOT = require('path').join(__dirname, '..');
 const { KintaraClient } = require(ROOT + '/lib/kintaraClient');
 const gs = require(ROOT + '/lib/gameState');
 const fs = require('fs');
