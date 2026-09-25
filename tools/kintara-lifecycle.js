@@ -118,11 +118,17 @@ async function kinsAgeDays(pk) {
 
 // ---------- makeCtx (copy dari headless-runner — helper wajib) ----------
 function makeCtx(name) {
-  return {
+  const ctxRef = { stopRequested: false };
+  const ctx = {
     name, bump(k){ this[k] = (this[k]||0)+1; }, get(k){ return this[k]||0; },
-    stop(){ return this._stop === true; }, onEvent: (m)=>log(`[${name}] ${m}`), onImportant: (m)=>log(`[${name}!] ${m}`),
+    stop(){ return ctxRef.stopRequested; }, onEvent: (m)=>log(`[${name}] ${m}`), onImportant: (m)=>log(`[${name}!] ${m}`),
     _lastBeat: Date.now(),
   };
+  Object.defineProperty(ctx, '_stop', {    set(v) { ctxRef.stopRequested = !!v; },
+    get() { return ctxRef.stopRequested; },
+    configurable: true,
+  });
+  return ctx;
 }
 
 // ---------- outfit random ----------
