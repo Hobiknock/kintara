@@ -59,7 +59,7 @@ REPORT_TG_CHAT=chat_id_kamu
 
 # Opsional
 KINTARA_FORCE_SERVER=12   # paksa semua wallet ke 1 server (menonaktifkan 1/1)
-SELL_THRESHOLD=10000      # target jual per siklus listing
+KINTARA_AUTOLIST=0        # (default) auto-listing OFF — fee on-chain game menguras SOL; set 1 utk aktifkan lagi
 ```
 
 ### 3. Jalankan
@@ -105,7 +105,7 @@ node tools/check-inv.js    # cek inventory cepat
 |---|---|---|
 | F1 | skill < 5 | push semua skill sampai rata (tutorial aman) |
 | F2 | semua skill ≥ 5, akun < lv10 | mining rock gratis sampai avg lv 10 |
-| F3 | lv10, KINS ≥ 1000, umur ≥ 24 jam | jaga screen mining + siklus jual (cancel lama, list stone/coal ≥5000 @ 0.10–0.11 USD, max 4 slot) |
+| F3 | lv10, KINS ≥ 1000, umur ≥ 24 jam | jaga screen mining; hasil ditumpuk di bank game (auto-listing OFF — fee on-chain menguras SOL; jual manual batch kalau perlu) |
 | F4 | — | mining rock terus + watchdog (KINS habis → stop; dapat → mulai) |
 
 Wallet lv10+ tanpa 1000 KINS → **paywall** → stop total (aturan: *gabisa farming*).
