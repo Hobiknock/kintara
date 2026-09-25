@@ -120,7 +120,7 @@ async function kinsAgeDays(pk) {
 function makeCtx(name) {
   return {
     name, bump(k){ this[k] = (this[k]||0)+1; }, get(k){ return this[k]||0; },
-    stop(){ return false; }, onEvent: (m)=>log(`[${name}] ${m}`), onImportant: (m)=>log(`[${name}!] ${m}`),
+    stop(){ return this._stop === true; }, onEvent: (m)=>log(`[${name}] ${m}`), onImportant: (m)=>log(`[${name}!] ${m}`),
     _lastBeat: Date.now(),
   };
 }
