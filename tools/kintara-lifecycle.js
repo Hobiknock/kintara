@@ -191,7 +191,14 @@ async function phase2(cli, tag) {
 }
 
 // ---------- fase 4: auto-sell ----------
+// AUTO-LISTING DIMATIKAN (25 Sep, atas permintaan user): fee on-chain game menguras SOL
+// (~$11,5 dari w1/w12/w16). SETELAH sini: hasil mining aman di inventory/bank game (gratis),
+// jual manual nanti kalau mau. Untuk aktifkan lagi: KINTARA_AUTOLIST=1 di .env.
 async function autoSell(cli, tag, items = ['stone','coal'], totalTarget = Number(process.env.SELL_THRESHOLD||10000)) {
+  if (process.env.KINTARA_AUTOLIST !== '1') {
+    log(`[${tag}] 📴 auto-listing OFF (hemat fee SOL) — hasil mining disimpan di inv/bank game`);
+    return { sold: 0, skipped: true };
+  }
   const p = await loops.connectPresence(cli, (m)=>log(`[${tag}] ${m}`)).catch(e=>{ throw new Error('presence: '+e.message); });
   try {
     await sleep(2500);
