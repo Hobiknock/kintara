@@ -71,6 +71,7 @@ function fmt(n) { return Number(n || 0).toLocaleString('en-US'); }
     }
     await new Promise(r => setTimeout(r, 1500));
   }
+  fs.mkdirSync(path.join(__dirname, '..', 'recon'), { recursive: true });
   fs.writeFileSync(path.join(__dirname, '..', 'recon/wallet-report.json'), JSON.stringify(rows, null, 2));
   process.exit(0);
 })();
