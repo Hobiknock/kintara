@@ -481,6 +481,45 @@ async function bankOverflowDisabled(cli, tag, items = ['stone','coal']) {
       const jam = Math.round(dtMin / 60 * 10) / 10;
       return `📊 <b>LAPORAN MINING</b> (${new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })} — ${dtMin} mnt)\n${lines.join('\n')}\n\n<b>TOTAL: ${totS.toLocaleString('id-ID')} stone + ${totC.toLocaleString('id-ID')} coal = ${(totS + totC).toLocaleString('id-ID')} ore</b> (${totF.toLocaleString('id-ID')} node dipanen, ~${Math.round((totS + totC) / jam).toLocaleString('id-ID')} ore/jam)`;
     }
+    // ===== /status: uptime, mode per wallet, stok stone/coal inventory + bank =====
+    const _boot = Date.now();
+    async function buildStatus() {
+      const up = Date.now() - _boot;
+      const upH = Math.floor(up / 3600000), upM = Math.floor((up % 3600000) / 60000);
+      const lines = []; let totIS = 0, totIC = 0, totBS = 0, totBC = 0;
+      for (const s of state) {
+        try {
+          let mode = '⏸️ idle';
+          const screenName = s.phase === 1 ? `f1-${s.tag}` : `lc-${s.tag}`;
+          let alive = false;
+          try { execSync(`screen -ls | grep -q ${screenName}`); alive = true; } catch {}
+          if (s.paywalled) mode = '🔒 paywall';
+          else if (s.kinsBlocked) mode = '🚫 stop (kins<1000)';
+          else if (s.phase === 1) mode = alive ? '🎓 F1 skills' : '⏳ F1 (mati)';
+          else if (s.phase === 2) mode = alive ? '⛏️ F2 rock→lv10' : '⏳ F2 (mati)';
+          else if (s.phase >= 3 && alive) mode = '♾️ F4 farming 24/7';
+          else if (s.phase >= 3) mode = '💤 F4 (mati)';
+          let invS = 0, invC = 0, bnkS = 0, bnkC = 0;
+          if (s.cli) {
+            const cli = s.cli;
+            const me = await cli.me().catch(() => null);
+            if (me && me.backpack) {
+              const bp = me.backpack;
+              const sum = (arr, t) => (arr || []).reduce((a, x) => a + (x && x.t === t ? (Number(x.n) || 0) : 0), 0);
+              // invSlots = slot fisik; bp.stone/bp.coal = total inv (fallback)
+              invS = sum(bp.invSlots, 'stone') || (Number(bp.stone) || 0);
+              invC = sum(bp.invSlots, 'coal') || (Number(bp.coal) || 0);
+              bnkS = sum(bp.bankSlots, 'stone');
+              bnkC = sum(bp.bankSlots, 'coal');
+            }
+          }
+          totIS += invS; totIC += invC; totBS += bnkS; totBC += bnkC;
+          lines.push(`▸ ${s._name || s.tag} — ${mode}\n   inv=(stone ${invS.toLocaleString('id-ID')}, coal ${invC.toLocaleString('id-ID')}) bank=(stone ${bnkS.toLocaleString('id-ID')}, coal ${bnkC.toLocaleString('id-ID')})`);
+        } catch (e) { lines.push(`▸ ${s._name || s.tag}: err ${e.message.slice(0, 30)}`); }
+        await sleep(1200);
+      }
+      return `🤖 <b>KINTARA BOT STATUS</b>\n⏱️ Uptime: ${upH}j ${upM}m\n\n${lines.join('\n')}\n\n<b>TOTAL</b>\nInventory: stone ${totIS.toLocaleString('id-ID')} + coal ${totIC.toLocaleString('id-ID')}\nBank: stone ${totBS.toLocaleString('id-ID')} + coal ${totBC.toLocaleString('id-ID')}`;
+    }
     (async () => { // jam-jaman
       for (;;) {
         await sleep(10 * 60 * 1000);
@@ -503,6 +542,7 @@ async function bankOverflowDisabled(cli, tag, items = ['stone','coal']) {
             if (cmd === '/update' || cmd === '/status') {
               log(`[tg] ${cmd} dari user — kirim laporan instan`);
               await report(await buildReport());
+              await report(await buildStatus());
             } else if (cmd === '/skills') {
               log('[tg] /skills dari user — cek level skill semua wallet');
               try {
@@ -516,10 +556,10 @@ async function bankOverflowDisabled(cli, tag, items = ['stone','coal']) {
                     const l = k => levelFromTotalXp(st.skillXp[k] || 0);
                     const avg = (l('combat') + l('woodcutting') + l('mining') + l('fishing') + l('cooking')) / 5;
                     totAvg += avg; nAvg++;
-                    rows.push(`▸ ${s._name || s.tag} [avg ${avg.toFixed(1)}] — C${l('combat')} W${l('woodcutting')} M${l('mining')} F${l('fishing')} K${l('cooking')}`);
+                    rows.push(`▸ ${s._name || s.tag} [avg ${avg.toFixed(1)}] — ⚔️${l('combat')} 🪓${l('woodcutting')} ⛏️${l('mining')} 🎣${l('fishing')} 🍳${l('cooking')}`);
                   } catch (e) { rows.push(`▸ ${s._name || s.tag}: err ${e.message.slice(0, 30)}`); }
                 }
-                const SKILL_TAGS = 'C=Combat W=Wood M=Mining F=Fishing K=Cooking';
+                const SKILL_TAGS = '⚔️=Combat 🪓=Wood ⛏️=Mining 🎣=Fishing 🍳=Cooking';
                 const grand = nAvg ? (totAvg / nAvg).toFixed(2) : '-';
                 await report(`🎯 <b>LEVEL SKILL SEMUA WALLET</b>\nAVG SEMUA AKUN: <b>${grand}</b>\n${rows.join('\n')}\n\n<i>${SKILL_TAGS}</i>`);
               } catch (e) { await report('⚠️ /skills err: ' + e.message.slice(0, 60)); }
