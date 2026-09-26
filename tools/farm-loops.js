@@ -1545,7 +1545,15 @@ async function runCook(ctx) {
   const me0 = await cli.me().catch(() => ({}));
   const raw = (me0.backpack || {}).fish || 0;
   onEvent(`🍳 Mulai masak — ${raw} ikan mentah`);
-  if (raw < 1) { onEvent('⚠️ gak ada ikan mentah — mancing dulu (/fish)'); return { cooked: 0, err: 'no_fish' }; }
+  if (raw < 1) {
+    onEvent('⚠️ gak ada ikan mentah — mancing dulu biar ada bahan masak...');
+    // FIX: jangan cuma return — mancing beneran (fish→cook rantai biar cook gak macet selamanya)
+    try { await runFish({ ...ctx, cookAfter: true }); } catch (e) { onEvent('⚠️ fish utk cook err: ' + String(e.message).slice(0, 40)); }
+    const me1 = await cli.me().catch(() => ({}));
+    const raw1 = ((me1.backpack || {}).fish) || 0;
+    if (raw1 < 1) { onEvent('⚠️ fish gagal dapat ikan — cook skip putaran ini'); return { cooked: 0, err: 'no_fish' }; }
+    return await cookBatchAtRoast(ctx, await connectPresence(cli, onEvent), raw1);
+  }
   const p = await connectPresence(cli, onEvent);
   watchLevelUps(p, ctx);
   // walk & masak via helper yang sama (ROAST world — portal pond-aware, anti koordinat nyasar)

@@ -55,7 +55,7 @@ const makeCtx2 = (name, cli) => { const c = makeCtx(name); c.cli = cli; c.capLev
   const rotate = (arr, n) => [...arr.slice(n), ...arr.slice(0, n)];
   const failStreak = {}; // mode → berapa putaran gagal macet
   let guard = 0;
-  while (guard++ < 120) {
+  while (guard++ < 400) { // guard besar: putaran ini ringan (cek level + 1 sesi), 120 kependekan saat cook/fish lambat
     // re-check level tiap putaran
     const st = await cli.playerStats(player.id).catch(() => null);
     if (!st) { await sleep(10000); continue; }
