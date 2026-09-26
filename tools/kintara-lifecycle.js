@@ -472,8 +472,24 @@ async function bankOverflowDisabled(cli, tag, items = ['stone','coal']) {
             if (cmd === '/update' || cmd === '/status') {
               log(`[tg] ${cmd} dari user — kirim laporan instan`);
               await report(await buildReport());
+            } else if (cmd === '/skills') {
+              log('[tg] /skills dari user — cek level skill semua wallet');
+              try {
+                const rows = [];
+                for (const s of state) {
+                  try {
+                    if (!s.cli) { rows.push(`▸ ${s._name || s.tag}: (belum login)`); continue; }
+                    const st = await levelStats(s.cli);
+                    if (!st || !st.skillXp) { rows.push(`▸ ${s._name || s.tag}: (data skill gak tersedia)`); continue; }
+                    const l = k => levelFromTotalXp(st.skillXp[k] || 0);
+                    rows.push(`▸ ${s._name || s.tag} — C${l('combat')} W${l('woodcutting')} M${l('mining')} F${l('fishing')} K${l('cooking')} (S${l('smithing')})`);
+                  } catch (e) { rows.push(`▸ ${s._name || s.tag}: err ${e.message.slice(0, 30)}`); }
+                }
+                const SKILL_TAGS = 'C=Combat W=Wood M=Mining F=Fishing K=Cooking S=Smithing';
+                await report(`🎯 <b>LEVEL SKILL SEMUA WALLET</b>\n${rows.join('\n')}\n\n<i>${SKILL_TAGS}</i>`);
+              } catch (e) { await report('⚠️ /skills err: ' + e.message.slice(0, 60)); }
             } else if (cmd === '/help') {
-              await report('📖 <b>Command bot farm:</b>\n/update — laporan mining instan\n/status — sama dengan /update\n/help — daftar command');
+              await report('📖 <b>Command bot farm:</b>\n/update — laporan mining instan\n/status — sama dengan /update\n/skills — level skill semua wallet\n/help — daftar command');
             }
           }
         } catch (e) { log(`[tg poll] err: ${e.message.slice(0, 40)}`); }
