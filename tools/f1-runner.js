@@ -27,12 +27,15 @@ const log = (m) => console.log(`[${new Date().toLocaleTimeString('id-ID')}] ${m}
 const SKILLS = ['combat', 'woodcutting', 'mining', 'fishing', 'cooking'];
 
 function makeCtx(name) {
-  return {
+  const ctxRef = { stopRequested: false };
+  const ctx = {
     name, bump(k){ this[k] = (this[k]||0)+1; }, get(k){ return this[k]||0; },
-    stop(){ return this._stop === true; },
+    stop(){ return ctxRef.stopRequested; }, // closure — imun destructured-call (this hilang)
     onEvent: (m) => log(`[${name}] ${m}`), onImportant: (m) => log(`[${name}!] ${m}`),
     _lastBeat: Date.now(),
   };
+  Object.defineProperty(ctx, '_stop', { set(v){ ctxRef.stopRequested = !!v; }, get(){ return ctxRef.stopRequested; } });
+  return ctx;
 }
 const makeCtx2 = (name, cli) => { const c = makeCtx(name); c.cli = cli; c.capLevel = 5; return c; };
 
