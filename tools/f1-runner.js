@@ -46,8 +46,16 @@ const makeCtx2 = (name, cli) => { const c = makeCtx(name); c.cli = cli; c.capLev
   const player = wrapper.player || cli.player;
   log(`[${TAG}] login ok player=${player?.id}`);
 
+  // URUTAN FAIR-ROTASI: tiap wallet mulai dari skill acak BEDA (anti rebutan node),
+  // lalu urut tetap; skill yang gagal macet (mis. wood kehabisan pohon) di-skip
+  // maksimal 2 putaran beruntun supaya skill lain kebagian.
+  const BASE_ORDER = ['combat', 'wood', 'rock', 'fish', 'cook'];
+  const startIdx = (TAG_num) => (TAG_num - 1) % BASE_ORDER.length; // w1→combat, w2→wood, w3→rock, w4→fish, w5→cook
+  const TAG_num = Number((TAG.match(/w(\d+)/) || [0, 1])[1]);
+  const rotate = (arr, n) => [...arr.slice(n), ...arr.slice(0, n)];
+  const failStreak = {}; // mode → berapa putaran gagal macet
   let guard = 0;
-  while (guard++ < 40) {
+  while (guard++ < 120) {
     // re-check level tiap putaran
     const st = await cli.playerStats(player.id).catch(() => null);
     if (!st) { await sleep(10000); continue; }
@@ -56,12 +64,22 @@ const makeCtx2 = (name, cli) => { const c = makeCtx(name); c.cli = cli; c.capLev
     for (const k of SKILLS) lvOf[k] = levelFromTotalXp(sx[k] || 0);
     if (SKILLS.every(k => lvOf[k] >= 5)) { log(`[${TAG}] FASE 1 SELESAI ✅`); break; }
 
-    // urutan acak per putaran
-    const order = ['combat', 'wood', 'rock', 'fish', 'cook'].sort(() => Math.random() - 0.5);
+    const order = rotate(BASE_ORDER, startIdx(TAG_num));
+    // FAIR-ROTASI KETAT: skill yang macet >=2x DI-LOCK 3 putaran — jangan dicoba lagi
+    // sampai skill lain kebagian (cegah wood ngabisin semua waktu saat node sepi)
+    const locked = {};
+    for (const m of order) if ((failStreak[m] || 0) >= 2) locked[m] = (locked[m] || 0) + 1;
+    const usable = order.filter(m => !locked[m] || locked[m] >= 3);
+    for (const m of order) if (locked[m] && locked[m] >= 3) locked[m] = 0; // reset lock setelah 3 putaran
+    if (usable.length === 0) { await sleep(30000); continue; }
+    order.length = 0; order.push(...usable);
+    // naikkan skill yang macet ke akhir urutan biar yang lain jalan dulu
+    order.sort((a, b) => (failStreak[a] || 0) - (failStreak[b] || 0));
     for (const mode of order) {
       const key = { combat: 'combat', wood: 'woodcutting', rock: 'mining', fish: 'fishing', cook: 'cooking' }[mode];
-      if (lvOf[key] >= 5) continue; // skill ini udah — skip
-      log(`[${TAG}] sesi ${mode} (lv ${lvOf[key]})`);
+      if (lvOf[key] >= 5) { failStreak[mode] = 0; continue; } // skill ini udah — skip
+      const lvBefore = lvOf[key];
+      log(`[${TAG}] sesi ${mode} (lv ${lvBefore})`);
       const fn = {
         combat: () => loops.runCombat(makeCtx2(mode, cli), { dragon: false }),
         wood: () => loops.runWood(makeCtx2(mode, cli)),
@@ -69,7 +87,14 @@ const makeCtx2 = (name, cli) => { const c = makeCtx(name); c.cli = cli; c.capLev
         fish: () => loops.runFish(makeCtx2(mode, cli)),
         cook: () => loops.runCook(makeCtx2(mode, cli)),
       };
-      try { await fn[mode](); } catch (e) { log(`[${TAG}] ${mode} err: ${e.message.slice(0, 60)}`); }
+      let errMuted = false;
+      try { await fn[mode](); } catch (e) { log(`[${TAG}] ${mode} err: ${e.message.slice(0, 60)}`); errMuted = true; }
+      // cek naik tidak — kalau tidak, tandai macet
+      const st2 = await cli.playerStats(player.id).catch(() => null);
+      const lvAfter = st2 ? levelFromTotalXp((st2.skillXp || {})[key] || 0) : lvBefore;
+      if (lvAfter > lvBefore) failStreak[mode] = 0;
+      else failStreak[mode] = (failStreak[mode] || 0) + 1;
+      if (failStreak[mode] >= 2) log(`[${TAG}] ⏭️ ${mode} macet ${failStreak[mode]}x — diprioritaskan belakangan`);
       await sleep(rnd(5000, 10000));
       break; // kembali ke atas → re-check level & pilih skill berikutnya
     }
