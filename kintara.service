@@ -1,0 +1,17 @@
+[Unit]
+Description=Kintara Farm Bot - lifecycle 24/7
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agentuser
+WorkingDirectory=/home/agentuser/kintara
+ExecStart=/usr/bin/node /home/agentuser/kintara/tools/kintara-lifecycle.js
+Restart=always
+RestartSec=15
+StandardOutput=append:/home/agentuser/kintara/lifecycle.log
+StandardError=append:/home/agentuser/kintara/lifecycle.log
+
+[Install]
+WantedBy=multi-user.target
