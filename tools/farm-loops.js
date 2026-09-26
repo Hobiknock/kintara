@@ -646,6 +646,19 @@ async function runWood(ctx) {
       wood += y;
       ctx.bump('felled'); ctx.bump('wood');
       felledSinceMove++;
+      // HARD CAP F1: cek level langsung ke server tiap 10 node — event skill_xp
+      // kadang gak fire, jadi cap 5 bisa kelewatan (kasus Gracee wood lv10)
+      if (felledSinceMove % 10 === 0 && ctx.capLevel != null) {
+        try {
+          const { levelFromTotalXp } = require('../lib/skillXp');
+          const st = await cli.playerStats(cli.player.id).catch(() => null);
+          const lvNow = st ? levelFromTotalXp((st.skillXp || {}).woodcutting || 0) : 0;
+          if (lvNow >= ctx.capLevel) {
+            onEvent(`🎯 wood capai lvl ${lvNow} ≥ ${ctx.capLevel} (server check) — sesi dihentikan`);
+            break;
+          }
+        } catch {}
+      }
       onEvent(`✅ tree felled (wood+${wood})`);
       dead.set(tgt.key, Date.now());
       await ssleep(rnd(200, 600)); // dipangkas
