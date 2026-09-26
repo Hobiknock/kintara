@@ -607,13 +607,13 @@ async function runWood(ctx) {
       await ssleep(rnd(1200, 2000));
       emptyTicks++;
       const WP = WPS();
-      // STERIL: >1 putaran waypoint penuh tanpa 1 pun felled → pindah zona (whisperwood tetap di whisperwood — rotasi waypoint aja)
+      // STERIL: >1 putaran waypoint penuh tanpa 1 pun felled → rotasi ulang waypoint.
+      // ATURAN USER (26 Sep): SEMUA farming TETAP DI POND — tidak pindah-pindah zona,
+      // kecuali fish yang butuh bait (itu otomatis ke Whisperwood bunuh ayam).
       if (emptyTicks >= (WP.length + 1) * 8 && felledSinceMove === 0) {
         emptyTicks = 0; dead.clear(); felledSinceMove = 0;
         if (zone === 'whisperwood') { onEvent('🧭 Whisperwood steril — rotasi ulang grid...'); await gotoZone(); continue; }
-        const target = zone === 'pond' ? 'world' : 'pond';
-        onEvent(`🧭 area ${zone === 'pond' ? 'POND' : 'cluster tree WORLD'} steril — pindah ke ${target === 'pond' ? 'POND 🎣' : 'cluster tree WORLD'}...`);
-        zone = target;
+        onEvent(`🧭 area POND steril — rotasi ulang waypoint (tetap di POND, aturan user)...`);
         await gotoZone();
         continue;
       }
