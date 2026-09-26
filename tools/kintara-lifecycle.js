@@ -42,9 +42,8 @@ function loadEnv() {
       inWallets = true; continue;
     }
     if (inWallets) {
-      if (/^[A-Z_0-9]+=/.test(line)) { inWallets = false; } // next var — block selesai
-      else if (line.trim()) walletLines.push(line.trim());
-      continue;
+      if (/^[A-Z_0-9]+=/.test(line)) { inWallets = false; } // next var — block selesai, lanjut parse var ini
+      else { if (line.trim()) walletLines.push(line.trim()); continue; }
     }
     const m = line.match(/^([A-Z_0-9]+)=(.*)$/);
     if (m && !(m[1] in process.env)) process.env[m[1]] = m[2].trim();

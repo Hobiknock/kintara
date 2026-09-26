@@ -3,8 +3,7 @@ const ROOT = require('path').join(__dirname, '..');
 const { KintaraClient } = require(ROOT + '/lib/kintaraClient');
 const gs = require(ROOT + '/lib/gameState');
 const fs = require('fs');
-const env = fs.readFileSync(ROOT + '/.env','utf8');
-const pks = env.split('WALLETS=')[1].split('\n').filter(l=>l && !l.includes('=') && l.length>40);
+const pks = require(ROOT + '/lib/parseWallets').loadPks();
 const targets = [9,11,12,14];
 (async () => {
   for (const n of targets) {
