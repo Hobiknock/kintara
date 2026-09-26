@@ -623,6 +623,14 @@ async function bankOverflowDisabled(cli, tag, items = ['stone','coal']) {
       for (const s of state) {
         const name = `lc-${s.tag}`;
         const alive = (() => { try { execSync(`screen -ls | grep -q ${name}`); return true; } catch { return false; } })();
+        // FASE 1: lc- screen TIDAK BOLEH jalan (f1-runner yang urus) — matikan kalau ada bocor
+        if (s.phase === 1) {
+          if (alive) {
+            try { execSync(`screen -S ${name} -X quit 2>/dev/null`); } catch {}
+            log(`${s.tag} 🛑 lc screen ditutup — masih FASE 1 (f1-runner yang push skill)`);
+          }
+          continue;
+        }
         let bal = s._lastKins || 0;
         try { bal = await kinsBalance(s.pk); s._lastKins = bal; } catch {}
         // re-cek paywall (wallet free play bisa naik lv10 saat bot jalan)
