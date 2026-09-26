@@ -629,6 +629,26 @@ async function bankOverflowDisabled(cli, tag, items = ['stone','coal']) {
             try { execSync(`screen -S ${name} -X quit 2>/dev/null`); } catch {}
             log(`${s.tag} 🛑 lc screen ditutup — masih FASE 1 (f1-runner yang push skill)`);
           }
+          // RELAUNCH f1-runner: kalau screen f1- mati tapi F1 belum lulus → guard habis /
+          // crash — jangan dibiarkan manggut (kasus w1/w5 exit guard=121 dengan cook <5)
+          const f1name = `f1-${s.tag}`;
+          const f1alive = (() => { try { execSync(`screen -ls | grep -q ${f1name}`); return true; } catch { return false; } })();
+          if (!f1alive) {
+            // verifikasi dulu ke server: masih ada skill <5? kalau sudah semua ≥5, naikkan fase
+            try {
+              const cliC = s.cli || await openClient(s);
+              const stC = await levelStats(cliC);
+              const all5C = stC && stC.skillXp && SKILLS.every(k => levelFromTotalXp(stC.skillXp[k] || 0) >= 5);
+              if (all5C) {
+                s.phase = 2;
+                log(`${s.tag} ✅ FASE 1 tuntas (server check) — lanjut FASE 2`);
+              } else {
+                log(`${s.tag} 🔁 f1-runner mati tapi F1 belum lulus — relaunch`);
+                try { execSync(`screen -S ${f1name} -X quit 2>/dev/null`); } catch {}
+                execSync(`screen -dmS ${f1name} bash -c "node ${ROOT}/tools/f1-runner.js '${s.pk}' >> ${ROOT}/recon/multi/${f1name}.out 2>&1"`);
+              }
+            } catch (e) { log(`${s.tag} F1 relaunch check err: ${e.message.slice(0,50)}`); }
+          }
           continue;
         }
         let bal = s._lastKins || 0;
