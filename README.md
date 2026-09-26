@@ -54,8 +54,8 @@ pk_wallet3_base58
 # Telegram (wajib kalau mau laporan)
 TELEGRAM_BOT_TOKEN=123456:ABC...
 TELEGRAM_CHAT_ID=chat_id_kamu
-REPORT_TG_TOKEN=123456:ABC...   # opsional, override token laporan
-REPORT_TG_CHAT=chat_id_kamu
+REPORT_TG_TOKEN=...   # TIDAK DIPAKAI LAGI — laporan pakai TELEGRAM_BOT_TOKEN saja
+REPORT_TG_CHAT=...    # (baris ini bisa dihapus dari .env)
 
 # Opsional
 KINTARA_FORCE_SERVER=12   # paksa semua wallet ke 1 server (menonaktifkan 1/1)

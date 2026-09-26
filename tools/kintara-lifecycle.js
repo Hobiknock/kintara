@@ -66,8 +66,8 @@ function getPks() {
   return v.split(',').map(s=>s.trim()).filter(Boolean);
 }
 
-const TG_TOKEN = process.env.REPORT_TG_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '';
-const TG_CHAT = process.env.REPORT_TG_CHAT || process.env.TELEGRAM_CHAT_ID || '';
+const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+const TG_CHAT = process.env.TELEGRAM_CHAT_ID || '';
 function report(text) {
   if (!TG_TOKEN || !TG_CHAT) { log('[tg] (skip, no token) ' + text.split('\n')[0]); return; }
   return fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
