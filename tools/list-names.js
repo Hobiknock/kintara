@@ -6,11 +6,7 @@ const { levelFromTotalXp } = require(path.join(__dirname, '..', 'lib/skillXp'));
 const fs = require('fs');
 
 const env = fs.readFileSync(path.join(__dirname, '..', '.env'), 'utf8');
-let pks = [];
-const m = env.match(/WALLETS=([\s\S]*?)(?=\n[A-Z_]+=|\n*$)/);
-if (m) {
-  pks = m[1].replace(/^=?\s*/, '').split(/[\n,]/).map(s => s.trim()).filter(s => s.length > 50);
-}
+let pks = require(path.join(__dirname, '..', 'lib/parseWallets')).loadPks();
 console.error('wallets found:', pks.length);
 
 function fmt(n) { return Number(n || 0).toLocaleString('en-US'); }

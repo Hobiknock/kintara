@@ -14,10 +14,8 @@ if (!PK) { console.error('Pakai: node tools/f1-runner.js <privateKey>'); process
 const TAG = 'w' + (function () {
   try {
     const pub = new PublicKey(bs58.decode(PK).slice(32)).toBase58();
-    const env = fs.readFileSync(path.join(ROOT, '.env'), 'utf8');
-    const m = env.match(/WALLETS=((?:[^\n#]*\n?)+)/);
-    let pks = m[1].split('\n').map(x => x.trim()).filter(Boolean);
-    if (pks.length === 1 && pks[0].includes(',')) pks = pks[0].split(',');
+    const { loadPks } = require(path.join(ROOT, 'lib/parseWallets'));
+    const pks = loadPks();
     const i = pks.findIndex(x => { try { return new PublicKey(bs58.decode(x).slice(32)).toBase58() === pub; } catch { return false; } });
     return i >= 0 ? i + 1 : '?';
   } catch { return '?'; }

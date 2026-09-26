@@ -10,10 +10,8 @@ const conn = new Connection(process.env.SOLANA_RPC || 'https://api.mainnet-beta.
 const vault = Keypair.fromSecretKey(bs58.decode(fs.readFileSync(path.join(__dirname, '..', '.env.vault'), 'utf8').match(/VAULT_PK=(\S+)/)[1]));
 
 function loadPks() {
-  const env = fs.readFileSync(path.join(__dirname, '..', '.env'), 'utf8');
-  const m = env.match(/WALLETS=((?:[^\n#]*\n?)+)/);
-  let pks = m[1].split('\n').map(x => x.trim()).filter(Boolean);
-  if (pks.length === 1 && pks[0].includes(',')) pks = pks[0].split(',');
+  const { loadPks } = require(path.join(__dirname, '..', 'lib/parseWallets'));
+  const pks = loadPks();
   return pks;
 }
 

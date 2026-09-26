@@ -21,9 +21,7 @@ const { levelFromTotalXp } = require(path.join(ROOT, 'lib/skillXp'));
 
 // ---------- env ----------
 const envText = fs.readFileSync(path.join(ROOT, '.env'), 'utf8');
-const mW = envText.match(/WALLETS=((?:[^\n#]*\n?)+)/);
-let PKS = mW[1].split('\n').map(x => x.trim()).filter(Boolean);
-if (PKS.length === 1 && PKS[0].includes(',')) PKS = PKS[0].split(',');
+const PKS = require(path.join(ROOT, 'lib/parseWallets')).loadPks();
 const TG_TOKEN = (envText.match(/REPORT_TG_TOKEN=(\S+)/) || envText.match(/TELEGRAM_BOT_TOKEN=(\S+)/) || [])[1] || '';
 const TG_CHAT = (envText.match(/REPORT_TG_CHAT=(\S+)/) || envText.match(/TELEGRAM_CHAT_ID=(\S+)/) || [])[1] || '';
 const SERVERS = (process.env.KINTARA_SERVERS || '12,13,14,15,16').split(',').map(Number);

@@ -27,10 +27,8 @@ function loadVault() {
   return Keypair.fromSecretKey(bs58.decode(pk));
 }
 function loadGameKeypair(tag) {
-  const env = fs.readFileSync(path.join(__dirname, '..', '.env'), 'utf8');
-  const m = env.match(/WALLETS=((?:[^\n#]*\n?)+)/);
-  let pks = m[1].split('\n').map(x => x.trim()).filter(Boolean);
-  if (pks.length === 1 && pks[0].includes(',')) pks = pks[0].split(',');
+  const { loadPks } = require(path.join(__dirname, '..', 'lib/parseWallets'));
+  const pks = loadPks();
   let idx = -1;
   if (/^w\d+$/.test(tag)) idx = Number(tag.slice(1)) - 1;
   else idx = pks.findIndex(x => { try { return bs58.encode(Buffer.from(bs58.decode(x).slice(32))) === tag; } catch { return false; } });
