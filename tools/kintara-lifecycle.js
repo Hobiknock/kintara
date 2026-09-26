@@ -507,17 +507,21 @@ async function bankOverflowDisabled(cli, tag, items = ['stone','coal']) {
               log('[tg] /skills dari user — cek level skill semua wallet');
               try {
                 const rows = [];
+                let totAvg = 0, nAvg = 0;
                 for (const s of state) {
                   try {
                     if (!s.cli) { rows.push(`▸ ${s._name || s.tag}: (belum login)`); continue; }
                     const st = await levelStats(s.cli);
                     if (!st || !st.skillXp) { rows.push(`▸ ${s._name || s.tag}: (data skill gak tersedia)`); continue; }
                     const l = k => levelFromTotalXp(st.skillXp[k] || 0);
-                    rows.push(`▸ ${s._name || s.tag} — C${l('combat')} W${l('woodcutting')} M${l('mining')} F${l('fishing')} K${l('cooking')} (S${l('smithing')})`);
+                    const avg = (l('combat') + l('woodcutting') + l('mining') + l('fishing') + l('cooking')) / 5;
+                    totAvg += avg; nAvg++;
+                    rows.push(`▸ ${s._name || s.tag} [avg ${avg.toFixed(1)}] — C${l('combat')} W${l('woodcutting')} M${l('mining')} F${l('fishing')} K${l('cooking')}`);
                   } catch (e) { rows.push(`▸ ${s._name || s.tag}: err ${e.message.slice(0, 30)}`); }
                 }
-                const SKILL_TAGS = 'C=Combat W=Wood M=Mining F=Fishing K=Cooking S=Smithing';
-                await report(`🎯 <b>LEVEL SKILL SEMUA WALLET</b>\n${rows.join('\n')}\n\n<i>${SKILL_TAGS}</i>`);
+                const SKILL_TAGS = 'C=Combat W=Wood M=Mining F=Fishing K=Cooking';
+                const grand = nAvg ? (totAvg / nAvg).toFixed(2) : '-';
+                await report(`🎯 <b>LEVEL SKILL SEMUA WALLET</b>\nAVG SEMUA AKUN: <b>${grand}</b>\n${rows.join('\n')}\n\n<i>${SKILL_TAGS}</i>`);
               } catch (e) { await report('⚠️ /skills err: ' + e.message.slice(0, 60)); }
             } else if (cmd === '/help') {
               await report('📖 <b>Command bot farm:</b>\n/update — laporan mining instan\n/status — sama dengan /update\n/skills — level skill semua wallet\n/help — daftar command');
