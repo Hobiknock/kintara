@@ -563,8 +563,54 @@ async function bankOverflowDisabled(cli, tag, items = ['stone','coal']) {
                 const grand = nAvg ? (totAvg / nAvg).toFixed(2) : '-';
                 await report(`🎯 <b>LEVEL SKILL SEMUA WALLET</b>\nAVG SEMUA AKUN: <b>${grand}</b>\n${rows.join('\n')}\n\n<i>${SKILL_TAGS}</i>`);
               } catch (e) { await report('⚠️ /skills err: ' + e.message.slice(0, 60)); }
+            } else if (cmd === '/report') {
+              log('[tg] /report dari user — aktivitas live semua wallet');
+              try {
+                const rows = [];
+                for (const s of state) {
+                  try {
+                    // 1) screen aktif? (f1- atau lc-)
+                    const f1name = `f1-${s.tag}`, lcname = `lc-${s.tag}`;
+                    let scr = '';
+                    try { execSync(`screen -ls | grep -q ${f1name}`); scr = f1name; } catch {}
+                    if (!scr) { try { execSync(`screen -ls | grep -q ${lcname}`); scr = lcname; } catch {} }
+                    // 2) aktivitas terakhir dari log .out (baris terakhir yang informatif)
+                    const logFile = `${ROOT}/recon/multi/${scr || lcname}.out`;
+                    let act = '💀 screen mati / belum jalan';
+                    let srv = s._srv ? ` @srv${s._srv}` : '';
+                    try {
+                      const lines = fs.readFileSync(logFile, 'utf8').trim().split('\n');
+                      for (let i = lines.length - 1; i >= Math.max(0, lines.length - 40); i--) {
+                        const L = lines[i];
+                        let m;
+                        if ((m = L.match(/\[(combat|wood|rock|fish|cook)\]/))) {
+                          const jenis = { combat: '⚔️ Combat', wood: '🪓 Woodcutting', rock: '⛏️ Mining rock', fish: '🎣 Fishing', cook: '🍳 Cooking' }[m[1]];
+                          const detail =
+                            /zombie|mob|Wilderness|goblin|dragon/i.test(L) ? ' — lawan mob' :
+                            /panen wood|chop|POND/i.test(L) ? ' — panen kayu' :
+                            /rock felled|tambang/i.test(L) ? ' — tambang batu' :
+                            /fish|mancing|Whisperwood|ikan/i.test(L) ? ' — mancing' :
+                            /masak|cook/i.test(L) ? ' — masak' : '';
+                          act = `${jenis}${detail}`; break;
+                        }
+                      }
+                      // kalau .out isinya error module (F1 gagal), tandai
+                      if (act === '💀 screen mati / belum jalan' && /Cannot find module|Error/i.test(lines.slice(-5).join('\n'))) act = '⚠️ error — cek log';
+                    } catch {}
+                    // 3) fase
+                    let fase = '';
+                    if (s.phase === 1) fase = 'F1';
+                    else if (s.phase === 2) fase = 'F2';
+                    else if (s.phase === 3) fase = 'F3';
+                    else if (s.phase >= 4) fase = 'F4';
+                    rows.push(`▸ <b>${s._name || s.tag}</b> [${fase}] — ${act}${srv}${scr ? '' : ' ⚠️'}`);
+                  } catch (e) { rows.push(`▸ ${s._name || s.tag}: err ${e.message.slice(0, 30)}`); }
+                  await sleep(400);
+                }
+                await report(`📡 <b>AKTIVITAS LIVE — ${state.length} WALLET</b>\n${rows.join('\n')}\n\n<i>waktu: ${new Date().toLocaleTimeString('id-ID')}</i>`);
+              } catch (e) { await report('⚠️ /report err: ' + e.message.slice(0, 60)); }
             } else if (cmd === '/help') {
-              await report('📖 <b>Command bot farm:</b>\n/update — laporan mining instan\n/status — sama dengan /update\n/skills — level skill semua wallet\n/help — daftar command');
+              await report('📖 <b>Command bot farm:</b>\n/report — aktivitas live semua wallet\n/update — laporan mining instan\n/status — uptime + mode + stok inv/bank\n/skills — level skill semua wallet\n/help — daftar command');
             }
           }
         } catch (e) { log(`[tg poll] err: ${e.message.slice(0, 40)}`); }
