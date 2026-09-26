@@ -279,8 +279,20 @@ async function autoSell(cli, tag, items = ['stone','coal'], totalTarget = Number
 
 // helper: simpan kelebihan stok (di atas KEEP_IN_INV) ke bank — butuh presence aktif
 async function bankOverflow(cli, tag, items = ['stone','coal']) {
-  // FITUR BANK DIMATIKAN (permintaan user) — stok tetap di inventory untuk listing
-  return false;
+  // AUTO-BANK: ston+coal di inv di atas KEEP_IN_INV → deposit ke bank (F4 mining 24/7)
+  try {
+    const me = await cli.me(); const bp = me.backpack || {};
+    const tot = items.reduce((a,t)=>a+(Number(bp[t])||0),0);
+    if (tot <= KEEP_IN_INV) return false;
+    const p = await loops.connectPresence(cli, (m)=>log(`[${tag}] ${m}`));
+    try {
+      await sleep(2000);
+      await p.walkTo(bank.BANK_WORLD.x, bank.BANK_WORLD.z, { maxSec: 60 }).catch(()=>{});
+      const r = await bank.depositAll(cli, items);
+      log(`[${tag}] 🏦 banked: ${(r.moved||[]).join(', ') || 'tidak ada yang pindah'}`);
+      return true;
+    } finally { try { p.close(); } catch {} }
+  } catch(e) { log(`[${tag}] bankOverflow err: ${e.message.slice(0,60)}`); return false; }
 }
 async function bankOverflowDisabled(cli, tag, items = ['stone','coal']) {
   try {
@@ -408,6 +420,25 @@ async function bankOverflowDisabled(cli, tag, items = ['stone','coal']) {
     let wi = 0;
     for (const s of state) {
       const name = `lc-${s.tag}`;
+      // GATE FASE: F1 belum lulus → JANGAN mining rock (f1-runner yang urus)
+      if (s.phase === 1) { log(`${s.tag} ⏳ FASE 1 belum selesai — skip MODE ROCK`); continue; }
+      // GATE LEVEL: cek level akun langsung ke server — ≥10 → STOP, jangan mining
+      // KECUALI wallet yang sudah resmi F4 (lolos seleksi KINS) — farming 24/7 lewat jalur F4
+      if (s.phase < 3) {
+        try {
+          const cliG = s.cli || await openClient(s);
+          const stG = await levelStats(cliG);
+          const all5G = stG && stG.skillXp && SKILLS.every(k => levelFromTotalXp(stG.skillXp[k]||0) >= 5);
+          if (!all5G) { log(`${s.tag} ⏳ server: skill belum semua lv5 — tetap FASE 1`); s.phase = 1; continue; }
+          const alvG = Number(stG.avg) || 0;
+          if (alvG >= 10) {
+            log(`${s.tag} level akun=${alvG.toFixed(1)} ≥10 — lanjut seleksi FASE 3, bukan mining di sini`);
+            try { execSync(`screen -S ${name} -X quit 2>/dev/null`); } catch {}
+            continue;
+          }
+          log(`${s.tag} level akun=${alvG.toFixed(1)} <10 — boleh FASE 2 rock`);
+        } catch(e) { log(`${s.tag} gate level err: ${e.message.slice(0,50)}`); }
+      }
       if (s.paywalled) { log(`${s.tag} 🔒 paywalled — SKIP (paywall aktif)`); continue; }
       let bal = 0;
       try { bal = await kinsBalance(s.pk); } catch (e) { log(`${s.tag} kins check err: ${e.message.slice(0,50)}`); }
@@ -552,6 +583,18 @@ async function bankOverflowDisabled(cli, tag, items = ['stone','coal']) {
     const ineligible = [];
     for (const s of state) {
       try {
+        // GATE F4: hanya wallet yang SUDAH lewat F2 (level akun ≥10) boleh farming 24/7
+        if (s.phase === 1 || s.phase === 2) {
+          try {
+            const cliF = s.cli || await openClient(s);
+            const stF = await levelStats(cliF);
+            const all5F = stF && stF.skillXp && SKILLS.every(k => levelFromTotalXp(stF.skillXp[k]||0) >= 5);
+            const alvF = stF ? (Number(stF.avg) || 0) : 0;
+            if (!all5F) { s.phase = 1; log(`${s.tag} ⏳ F4 skip — skill belum lv5 (masih F1)`); continue; }
+            if (alvF < 10) { s.phase = 2; log(`${s.tag} ⏳ F4 skip — level akun=${alvF.toFixed(1)} <10 (masih F2)`); continue; }
+            if (s.phase === 2) { s.phase = 3; log(`${s.tag} ✅ level akun=${alvF.toFixed(1)} ≥10 — F2 selesai, masuk seleksi`); }
+          } catch(e) { log(`${s.tag} F4 gate err: ${e.message.slice(0,50)}`); continue; }
+        }
         const bal = await kinsBalance(s.pk);
         const age = bal >= 1000 ? await kinsAgeDays(s.pk) : -1;
         log(`${s.tag} kins=${bal} age=${age.toFixed(1)}d`);
